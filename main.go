@@ -30,6 +30,7 @@ const (
 	projectConfigFilename = ".mavu_llm.toml"
 	usageRulesConfigPath  = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename    = "USAGE_RULES.md"
+	usageRulesOutputPath  = ".codex/USAGE_RULES.md"
 	version               = "0.1.4"
 	defaultFilePermission = 0o644
 	defaultDirPermission  = 0o755
@@ -237,7 +238,7 @@ func runUsageRulesSync(rootDir string) error {
 		return err
 	}
 
-	args := []string{"usage_rules.sync", usageRulesFilename, "--all", "--link-to-folder", "deps", "--yes"}
+	args := []string{"usage_rules.sync", usageRulesOutputPath, "--all", "--link-to-folder", "deps", "--yes"}
 	fmt.Printf("Running: mix %s\n", strings.Join(args, " "))
 	cmd := exec.Command("mix", args...)
 	cmd.Dir = rootDir
@@ -257,7 +258,7 @@ func runUsageRulesSync(rootDir string) error {
 }
 
 func appendUsageRules(rootDir string) error {
-	rulesPath := filepath.Join(rootDir, usageRulesFilename)
+	rulesPath := filepath.Join(rootDir, usageRulesOutputPath)
 	data, err := os.ReadFile(rulesPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
