@@ -30,8 +30,8 @@ const (
 	projectConfigFilename = ".mavu_llm.toml"
 	usageRulesConfigPath  = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename    = "USAGE_RULES.md"
-	usageRulesOutputPath  = ".codex/USAGE_RULES.md"
-	version               = "0.1.4"
+	usageRulesOutputPath  = "USAGE_RULES.md"
+	version               = "0.1.5"
 	defaultFilePermission = 0o644
 	defaultDirPermission  = 0o755
 )
@@ -271,6 +271,8 @@ func appendUsageRules(rootDir string) error {
 	if rules == "" {
 		return os.Remove(rulesPath)
 	}
+
+	rules = strings.ReplaceAll(rules, "(deps/", "(../deps/")
 
 	targets := []string{
 		filepath.Join(rootDir, ".claude", claudeFilename),

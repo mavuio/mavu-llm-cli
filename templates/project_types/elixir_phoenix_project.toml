@@ -3,7 +3,4 @@ description = "Phoenix + Elixir project"
 skills = ["elixir-architect", "prod-eval", "bit-ship"]
 
 [agents]
-snippets = ["elixir_rules", "beans_usage"]
-
-[claude]
-snippets = ["elixir_rules", "beans_usage"]
+snippets = ["elixir_rules", "beans_usage", "plan"]
