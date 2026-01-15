@@ -30,7 +30,7 @@ const (
 	projectConfigFilename = ".mavu_llm.toml"
 	usageRulesConfigPath  = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename    = "USAGE_RULES.md"
-	version               = "0.1.1"
+	version               = "0.1.2"
 	defaultFilePermission = 0o644
 	defaultDirPermission  = 0o755
 )
@@ -237,18 +237,21 @@ func runUsageRulesSync(rootDir string) error {
 		return err
 	}
 
-	cmd := exec.Command("mix", "usage_rules.sync", usageRulesFilename, "--all", "--link-to-folder", "deps")
+	args := []string{"usage_rules.sync", usageRulesFilename, "--all", "--link-to-folder", "deps", "--yes"}
+	fmt.Printf("Running: mix %s\n", strings.Join(args, " "))
+	cmd := exec.Command("mix", args...)
 	cmd.Dir = rootDir
 	output, err := cmd.CombinedOutput()
+	tail := tailLines(string(output), 10)
 	if err != nil {
-		message := strings.TrimSpace(string(output))
+		message := strings.TrimSpace(tail)
 		if message != "" {
 			return fmt.Errorf("usage_rules.sync failed: %w\n%s", err, message)
 		}
 		return fmt.Errorf("usage_rules.sync failed: %w", err)
 	}
-	if len(output) > 0 {
-		fmt.Print(string(output))
+	if strings.TrimSpace(tail) != "" {
+		fmt.Printf("%s\n", tail)
 	}
 	return appendUsageRules(rootDir)
 }
@@ -300,6 +303,18 @@ func appendWithSeparator(path, content string) error {
 	builder.WriteString("\n")
 
 	return os.WriteFile(path, []byte(builder.String()), defaultFilePermission)
+}
+
+func tailLines(text string, limit int) string {
+	cleaned := strings.TrimRight(text, "\n")
+	if cleaned == "" || limit <= 0 {
+		return ""
+	}
+	lines := strings.Split(cleaned, "\n")
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func loadProjectTypes() (map[string]ProjectConfig, error) {
