@@ -30,7 +30,7 @@ const (
 	projectConfigFilename = ".mavu_llm.toml"
 	usageRulesConfigPath  = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename    = "USAGE_RULES.md"
-	version               = "0.1.3"
+	version               = "0.1.4"
 	defaultFilePermission = 0o644
 	defaultDirPermission  = 0o755
 )
