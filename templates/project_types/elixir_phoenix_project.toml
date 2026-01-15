@@ -1,0 +1,9 @@
+name = "Elixir Phoenix"
+description = "Phoenix + Elixir project"
+skills = ["elixir-architect", "prod-eval", "bit-ship"]
+
+[agents]
+snippets = ["beans_usage", "elixir_rules"]
+
+[claude]
+snippets = ["beans_usage", "elixir_rules"]
