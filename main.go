@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -27,6 +28,9 @@ const (
 	agentsFilename        = "AGENTS.md"
 	claudeFilename        = "CLAUDE.md"
 	projectConfigFilename = ".mavu_llm.toml"
+	usageRulesConfigPath  = "lib/_mavubit/essentials/config/essentials_mix.exs"
+	usageRulesFilename    = "USAGE_RULES.md"
+	version               = "0.1.1"
 	defaultFilePermission = 0o644
 	defaultDirPermission  = 0o755
 )
@@ -72,6 +76,8 @@ func main() {
 		if err := runUpdate(os.Args[2:]); err != nil {
 			exitWithError(err)
 		}
+	case "version", "--version", "-v":
+		printVersion()
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -88,11 +94,20 @@ func printUsage() {
 	fmt.Println("  mavu-llm types")
 	fmt.Println("  mavu-llm init --type <project-type> [--path <dir>]")
 	fmt.Println("  mavu-llm update [--path <dir>]")
+	fmt.Println("  mavu-llm version")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  types   List available project types")
-	fmt.Println("  init    Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
-	fmt.Println("  update  Re-run setup using stored project type")
+	fmt.Println("  types    List available project types")
+	fmt.Println("  init     Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
+	fmt.Println("  update   Re-run setup using stored project type")
+	fmt.Println("  version  Show current version")
+	fmt.Println()
+	fmt.Println("Notes:")
+	fmt.Println("  If [claude] snippets are omitted, [agents] snippets are reused for CLAUDE.md")
+}
+
+func printVersion() {
+	fmt.Printf("mavu-llm %s\n", version)
 }
 
 func listProjectTypes() error {
@@ -205,8 +220,86 @@ func runSetup(rootDir, projectTypeID string, projectTypes map[string]ProjectConf
 		return err
 	}
 
+	if err := runUsageRulesSync(rootDir); err != nil {
+		return err
+	}
+
 	fmt.Printf("%s %s in %s\n", action, projectTypeID, rootDir)
 	return nil
+}
+
+func runUsageRulesSync(rootDir string) error {
+	configPath := filepath.Join(rootDir, usageRulesConfigPath)
+	if _, err := os.Stat(configPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	cmd := exec.Command("mix", "usage_rules.sync", usageRulesFilename, "--all", "--link-to-folder", "deps")
+	cmd.Dir = rootDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message != "" {
+			return fmt.Errorf("usage_rules.sync failed: %w\n%s", err, message)
+		}
+		return fmt.Errorf("usage_rules.sync failed: %w", err)
+	}
+	if len(output) > 0 {
+		fmt.Print(string(output))
+	}
+	return appendUsageRules(rootDir)
+}
+
+func appendUsageRules(rootDir string) error {
+	rulesPath := filepath.Join(rootDir, usageRulesFilename)
+	data, err := os.ReadFile(rulesPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	rules := strings.TrimSpace(string(data))
+	if rules == "" {
+		return os.Remove(rulesPath)
+	}
+
+	targets := []string{
+		filepath.Join(rootDir, ".claude", claudeFilename),
+		filepath.Join(rootDir, ".codex", agentsFilename),
+	}
+	for _, target := range targets {
+		if err := appendWithSeparator(target, rules); err != nil {
+			return err
+		}
+	}
+
+	return os.Remove(rulesPath)
+}
+
+func appendWithSeparator(path, content string) error {
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	existingText := string(existing)
+	builder := strings.Builder{}
+	builder.WriteString(existingText)
+	if len(existingText) > 0 && !strings.HasSuffix(existingText, "\n") {
+		builder.WriteString("\n")
+	}
+	if len(existingText) > 0 {
+		builder.WriteString("\n")
+	}
+	builder.WriteString(content)
+	builder.WriteString("\n")
+
+	return os.WriteFile(path, []byte(builder.String()), defaultFilePermission)
 }
 
 func loadProjectTypes() (map[string]ProjectConfig, error) {
