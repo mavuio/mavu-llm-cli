@@ -31,7 +31,7 @@ const (
 	usageRulesConfigPath  = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename    = "USAGE_RULES.md"
 	usageRulesOutputPath  = "USAGE_RULES.md"
-	version               = "0.1.5"
+	version               = "0.1.6"
 	defaultFilePermission = 0o644
 	defaultDirPermission  = 0o755
 )
