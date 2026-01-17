@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,40 +17,63 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-//go:embed templates/**
-var templatesFS embed.FS
-
 const (
-	projectTypesGlob      = "templates/project_types/*.toml"
-	agentsSnippetsDir     = "templates/agents_md_snippets"
-	claudeSnippetsDir     = "templates/claude_md_snippets"
-	skillTemplatesDir     = "templates/skill_templates"
-	agentsFilename        = "AGENTS.md"
-	claudeFilename        = "CLAUDE.md"
-	projectConfigFilename = ".mavu_llm.toml"
-	usageRulesConfigPath  = "lib/_mavubit/essentials/config/essentials_mix.exs"
-	usageRulesFilename    = "USAGE_RULES.md"
-	usageRulesOutputPath  = "USAGE_RULES.md"
-	version               = "0.1.6"
-	defaultFilePermission = 0o644
-	defaultDirPermission  = 0o755
+	projectTypesDir        = "project_types"
+	projectTypesGlob       = "project_types/*.toml"
+	snippetsDir            = "snippets"
+	skillTemplatesDir      = "skill_templates"
+	commandTemplatesDir    = "command_templates"
+	commandTemplateExt     = ".md"
+	mcpTemplatesDir        = "mcp_templates"
+	mcpTemplateExt         = ".mcp.json"
+	templatesEnvVar        = "MAVU_LLM_TEMPLATES_DIR"
+	agentsFilename         = "AGENTS.md"
+	claudeFilename         = "CLAUDE.md"
+	projectConfigFilename  = ".mavu_llm.toml"
+	opencodeConfigFilename = "opencode.json"
+	mcpConfigFilename      = ".mcp.json"
+	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
+	usageRulesFilename     = "USAGE_RULES.md"
+	usageRulesOutputPath   = "USAGE_RULES.md"
+	version                = "0.1.7"
+	defaultFilePermission  = 0o644
+	defaultDirPermission   = 0o755
 )
 
+var verboseOutput bool
+
 type ProjectConfig struct {
-	Name        string        `toml:"name"`
-	Description string        `toml:"description"`
-	Agents      SnippetConfig `toml:"agents"`
-	Claude      SnippetConfig `toml:"claude"`
-	Skills      []string      `toml:"skills"`
+	Name        string     `toml:"name"`
+	Description string     `toml:"description"`
+	Skills      []string   `toml:"skills"`
+	Commands    []string   `toml:"commands"`
+	Mcps        []string   `toml:"mcps"`
+	Snippets    []string   `toml:"snippets"`
+	Claude      ToolConfig `toml:"claude"`
+	Codex       ToolConfig `toml:"codex"`
+	Agents      ToolConfig `toml:"agents"`
 }
 
-type SnippetConfig struct {
-	Snippets []string `toml:"snippets"`
+type ToolConfig struct {
+	Skills          []string `toml:"skills"`
+	Commands        []string `toml:"commands"`
+	Mcps            []string `toml:"mcps"`
+	Snippets        []string `toml:"snippets"`
+	SnippetsAppend  []string `toml:"snippets_append"`
+	SnippetsPrepend []string `toml:"snippets_prepend"`
+}
+
+type ResolvedToolConfig struct {
+	Skills   []string
+	Commands []string
+	Mcps     []string
+	Snippets []string
 }
 
 type ProjectType struct {
 	ID     string
 	Config ProjectConfig
+	Root   string
 }
 
 type ProjectTypeFile struct {
@@ -77,6 +100,10 @@ func main() {
 		if err := runUpdate(os.Args[2:]); err != nil {
 			exitWithError(err)
 		}
+	case "template-paths":
+		if err := listTemplatePaths(); err != nil {
+			exitWithError(err)
+		}
 	case "version", "--version", "-v":
 		printVersion()
 	case "help", "--help", "-h":
@@ -93,18 +120,22 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  mavu-llm types")
-	fmt.Println("  mavu-llm init --type <project-type> [--path <dir>]")
-	fmt.Println("  mavu-llm update [--path <dir>]")
+	fmt.Println("  mavu-llm init --type <project-type> [--path <dir>] [--verbose]")
+	fmt.Println("  mavu-llm update [--path <dir>] [--verbose]")
+	fmt.Println("  mavu-llm template-paths")
 	fmt.Println("  mavu-llm version")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  types    List available project types")
-	fmt.Println("  init     Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
-	fmt.Println("  update   Re-run setup using stored project type")
-	fmt.Println("  version  Show current version")
+	fmt.Println("  types           List available project types")
+	fmt.Println("  init            Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
+	fmt.Println("  update          Re-run setup using stored project type")
+	fmt.Println("  template-paths  Show template search paths")
+	fmt.Println("  version         Show current version")
 	fmt.Println()
 	fmt.Println("Notes:")
-	fmt.Println("  If [claude] snippets are omitted, [agents] snippets are reused for CLAUDE.md")
+	fmt.Println("  Top-level skills/commands/snippets apply to codex and claude unless overridden.")
+	fmt.Println("  Use snippets_prepend/snippets_append for tool-specific additions.")
+	fmt.Printf("  Set %s to the template root directory.\n", templatesEnvVar)
 }
 
 func printVersion() {
@@ -124,7 +155,8 @@ func listProjectTypes() error {
 
 	fmt.Println("Available project types:")
 	for _, id := range ids {
-		cfg := projectTypes[id]
+		projectType := projectTypes[id]
+		cfg := projectType.Config
 		label := cfg.Name
 		if label == "" {
 			label = id
@@ -138,14 +170,39 @@ func listProjectTypes() error {
 	return nil
 }
 
+func listTemplatePaths() error {
+	roots, err := templateRoots()
+	if err != nil {
+		return err
+	}
+	if len(roots) == 0 {
+		return errors.New("no template roots found")
+	}
+	if env := strings.TrimSpace(os.Getenv(templatesEnvVar)); env != "" {
+		fmt.Printf("Using %s=%s\n", templatesEnvVar, env)
+	}
+	fmt.Println("Template roots:")
+	for _, root := range roots {
+		fmt.Printf("  %s\n", root)
+		fmt.Printf("    project_types: %s\n", filepath.Join(root, projectTypesDir))
+		fmt.Printf("    snippets: %s\n", filepath.Join(root, snippetsDir))
+		fmt.Printf("    skill_templates: %s\n", filepath.Join(root, skillTemplatesDir))
+		fmt.Printf("    command_templates: %s\n", filepath.Join(root, commandTemplatesDir))
+		fmt.Printf("    mcp_templates: %s\n", filepath.Join(root, mcpTemplatesDir))
+	}
+	return nil
+}
+
 func runInit(args []string) error {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	projectTypeFlag := flags.String("type", "", "Project type ID")
 	pathFlag := flags.String("path", "", "Target directory (defaults to cwd)")
+	verboseFlag := flags.Bool("verbose", false, "Enable verbose logging")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	verboseOutput = *verboseFlag
 
 	projectTypes, err := loadProjectTypes()
 	if err != nil {
@@ -170,16 +227,22 @@ func runInit(args []string) error {
 		rootDir = cwd
 	}
 
-	return runSetup(rootDir, projectTypeID, projectTypes, "Initialized")
+	projectType, ok := projectTypes[projectTypeID]
+	if !ok {
+		return fmt.Errorf("unknown project type: %s", projectTypeID)
+	}
+	return runSetup(rootDir, projectType, "Initialized")
 }
 
 func runUpdate(args []string) error {
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	pathFlag := flags.String("path", "", "Target directory (defaults to cwd)")
+	verboseFlag := flags.Bool("verbose", false, "Enable verbose logging")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	verboseOutput = *verboseFlag
 
 	rootDir := strings.TrimSpace(*pathFlag)
 	if rootDir == "" {
@@ -200,24 +263,46 @@ func runUpdate(args []string) error {
 		return err
 	}
 
-	return runSetup(rootDir, projectTypeID, projectTypes, "Updated")
-}
-
-func runSetup(rootDir, projectTypeID string, projectTypes map[string]ProjectConfig, action string) error {
-	cfg, ok := projectTypes[projectTypeID]
+	projectType, ok := projectTypes[projectTypeID]
 	if !ok {
 		return fmt.Errorf("unknown project type: %s", projectTypeID)
 	}
+	return runSetup(rootDir, projectType, "Updated")
+}
 
-	if err := createSkillDirs(rootDir, cfg); err != nil {
+func runSetup(rootDir string, projectType ProjectType, action string) error {
+	cfg := projectType.Config
+	templateRoot := projectType.Root
+	codexConfig := resolveCodexConfig(cfg)
+	claudeConfig := resolveToolConfig(cfg, cfg.Claude)
+
+	if err := createSkillDirs(rootDir, templateRoot, codexConfig, claudeConfig); err != nil {
 		return err
 	}
 
-	if err := writeRootDocs(rootDir, cfg); err != nil {
+	if err := createCommandDirs(rootDir, templateRoot, codexConfig, claudeConfig); err != nil {
 		return err
 	}
 
-	if err := writeProjectTypeFile(rootDir, projectTypeID); err != nil {
+	mcpNames := uniqueOrdered(codexConfig.Mcps, claudeConfig.Mcps)
+	if len(mcpNames) > 0 {
+		mcpEntries, err := loadMcpEntries(templateRoot, mcpNames)
+		if err != nil {
+			return err
+		}
+		if err := writeOpenCodeConfig(rootDir, mcpEntries); err != nil {
+			return err
+		}
+		if err := writeMcpConfig(rootDir, mcpEntries); err != nil {
+			return err
+		}
+	}
+
+	if err := writeRootDocs(rootDir, templateRoot, codexConfig, claudeConfig); err != nil {
+		return err
+	}
+
+	if err := writeProjectTypeFile(rootDir, projectType.ID); err != nil {
 		return err
 	}
 
@@ -225,7 +310,7 @@ func runSetup(rootDir, projectTypeID string, projectTypes map[string]ProjectConf
 		return err
 	}
 
-	fmt.Printf("%s %s in %s\n", action, projectTypeID, rootDir)
+	fmt.Printf("%s %s in %s\n", action, projectType.ID, rootDir)
 	return nil
 }
 
@@ -305,7 +390,7 @@ func appendWithSeparator(path, content string) error {
 	builder.WriteString(content)
 	builder.WriteString("\n")
 
-	return os.WriteFile(path, []byte(builder.String()), defaultFilePermission)
+	return writeFile(path, []byte(builder.String()))
 }
 
 func tailLines(text string, limit int) string {
@@ -320,26 +405,263 @@ func tailLines(text string, limit int) string {
 	return strings.Join(lines, "\n")
 }
 
-func loadProjectTypes() (map[string]ProjectConfig, error) {
-	matches, err := fs.Glob(templatesFS, projectTypesGlob)
+func resolveCodexConfig(cfg ProjectConfig) ResolvedToolConfig {
+	if toolConfigEmpty(cfg.Codex) && !toolConfigEmpty(cfg.Agents) {
+		return resolveToolConfig(cfg, cfg.Agents)
+	}
+	return resolveToolConfig(cfg, cfg.Codex)
+}
+
+func resolveToolConfig(cfg ProjectConfig, tool ToolConfig) ResolvedToolConfig {
+	return ResolvedToolConfig{
+		Skills:   resolveSkills(cfg.Skills, tool),
+		Commands: resolveCommands(cfg.Commands, tool),
+		Mcps:     resolveMcps(cfg.Mcps, tool),
+		Snippets: resolveSnippets(cfg.Snippets, tool),
+	}
+}
+
+func resolveSkills(defaults []string, tool ToolConfig) []string {
+	toolSkills := normalizedList(tool.Skills)
+	if len(toolSkills) > 0 {
+		return toolSkills
+	}
+	return normalizedList(defaults)
+}
+
+func resolveCommands(defaults []string, tool ToolConfig) []string {
+	toolCommands := normalizedList(tool.Commands)
+	if len(toolCommands) > 0 {
+		return toolCommands
+	}
+	return normalizedList(defaults)
+}
+
+func resolveMcps(defaults []string, tool ToolConfig) []string {
+	toolMcps := normalizedList(tool.Mcps)
+	if len(toolMcps) > 0 {
+		return toolMcps
+	}
+	return normalizedList(defaults)
+}
+
+func resolveSnippets(defaults []string, tool ToolConfig) []string {
+	toolSnippets := normalizedList(tool.Snippets)
+	if len(toolSnippets) > 0 {
+		return toolSnippets
+	}
+	resolved := normalizedList(defaults)
+	prepend := normalizedList(tool.SnippetsPrepend)
+	appendList := normalizedList(tool.SnippetsAppend)
+	if len(prepend) > 0 {
+		resolved = append(prepend, resolved...)
+	}
+	if len(appendList) > 0 {
+		resolved = append(resolved, appendList...)
+	}
+	return resolved
+}
+
+func toolConfigEmpty(cfg ToolConfig) bool {
+	return len(cfg.Skills) == 0 && len(cfg.Commands) == 0 && len(cfg.Mcps) == 0 && len(cfg.Snippets) == 0 && len(cfg.SnippetsAppend) == 0 && len(cfg.SnippetsPrepend) == 0
+}
+
+func normalizedList(items []string) []string {
+	cleaned := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned
+}
+
+func uniqueOrdered(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	var combined []string
+	for _, list := range lists {
+		for _, item := range list {
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			combined = append(combined, item)
+		}
+	}
+	return combined
+}
+
+func commandTemplateFilename(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if strings.HasSuffix(trimmed, commandTemplateExt) {
+		return trimmed
+	}
+	return trimmed + commandTemplateExt
+}
+
+func mcpTemplateFilename(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if strings.HasSuffix(trimmed, mcpTemplateExt) {
+		return trimmed
+	}
+	return trimmed + mcpTemplateExt
+}
+
+func normalizeMcpServer(entry map[string]any) map[string]any {
+	normalized := make(map[string]any, len(entry))
+	for key, value := range entry {
+		if key == "enabled" {
+			continue
+		}
+		normalized[key] = value
+	}
+	if value, ok := normalized["type"].(string); ok && value == "remote" {
+		normalized["type"] = "http"
+	}
+	return normalized
+}
+
+func loadMcpTemplate(path string) (map[string]any, []string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	expanded, missing := expandEnvVars(string(data))
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(expanded), &entry); err != nil {
+		return nil, missing, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return entry, missing, nil
+}
+
+func expandEnvVars(input string) (string, []string) {
+	missing := make(map[string]struct{})
+	expanded := os.Expand(input, func(key string) string {
+		if value, ok := os.LookupEnv(key); ok {
+			return value
+		}
+		missing[key] = struct{}{}
+		return fmt.Sprintf("${%s}", key)
+	})
+	if len(missing) == 0 {
+		return expanded, nil
+	}
+	missingKeys := make([]string, 0, len(missing))
+	for key := range missing {
+		missingKeys = append(missingKeys, key)
+	}
+	sort.Strings(missingKeys)
+	return expanded, missingKeys
+}
+
+func warnMissingEnv(path string, missing []string) {
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Printf("Warning: %s missing env vars: %s\n", path, strings.Join(missing, ", "))
+}
+
+func loadProjectTypes() (map[string]ProjectType, error) {
+	roots, err := templateRoots()
 	if err != nil {
 		return nil, err
 	}
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("no template roots found (set %s or ensure %s exists)", templatesEnvVar, projectTypesDir)
+	}
 
-	projectTypes := make(map[string]ProjectConfig, len(matches))
-	for _, match := range matches {
-		data, err := templatesFS.ReadFile(match)
-		if err != nil {
+	projectTypes := make(map[string]ProjectType)
+	for _, root := range roots {
+		if err := loadProjectTypesFromRoot(root, projectTypes); err != nil {
 			return nil, err
 		}
-		var cfg ProjectConfig
-		if err := toml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", match, err)
-		}
-		id := strings.TrimSuffix(filepath.Base(match), filepath.Ext(match))
-		projectTypes[id] = cfg
+	}
+	if len(projectTypes) == 0 {
+		return nil, errors.New("no project types found")
 	}
 	return projectTypes, nil
+}
+
+func loadProjectTypesFromRoot(root string, projectTypes map[string]ProjectType) error {
+	glob := filepath.Join(root, projectTypesGlob)
+	matches, err := filepath.Glob(glob)
+	if err != nil {
+		return err
+	}
+	for _, match := range matches {
+		data, err := os.ReadFile(match)
+		if err != nil {
+			return err
+		}
+		if err := parseProjectTypeFile(match, data, root, projectTypes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseProjectTypeFile(path string, data []byte, root string, projectTypes map[string]ProjectType) error {
+	var cfg ProjectConfig
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	projectTypes[id] = ProjectType{ID: id, Config: cfg, Root: root}
+	return nil
+}
+
+func templateRoots() ([]string, error) {
+	if env := strings.TrimSpace(os.Getenv(templatesEnvVar)); env != "" {
+		if _, err := os.Stat(filepath.Join(env, projectTypesDir)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("%s is missing %s", env, projectTypesDir)
+			}
+			return nil, err
+		}
+		return []string{env}, nil
+	}
+
+	var candidates []string
+	exePath, err := os.Executable()
+	if err == nil {
+		resolved, err := filepath.EvalSymlinks(exePath)
+		if err == nil {
+			resolvedDir := filepath.Dir(resolved)
+			if resolvedDir != "" {
+				candidates = append(candidates, resolvedDir, filepath.Join(resolvedDir, "templates"))
+			}
+		}
+		exeDir := filepath.Dir(exePath)
+		if exeDir != "" {
+			candidates = append(candidates, exeDir, filepath.Join(exeDir, "templates"))
+		}
+	}
+	cwd, err := os.Getwd()
+	if err == nil {
+		candidates = append(candidates, cwd, filepath.Join(cwd, "templates"))
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	var roots []string
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(candidate, projectTypesDir)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		seen[candidate] = struct{}{}
+		roots = append(roots, candidate)
+	}
+	return roots, nil
 }
 
 func writeProjectTypeFile(rootDir, projectTypeID string) error {
@@ -348,7 +670,7 @@ func writeProjectTypeFile(rootDir, projectTypeID string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, payload, defaultFilePermission)
+	return writeFile(path, payload)
 }
 
 func readProjectTypeFile(rootDir string) (string, error) {
@@ -367,7 +689,7 @@ func readProjectTypeFile(rootDir string) (string, error) {
 	return strings.TrimSpace(cfg.Type), nil
 }
 
-func promptProjectType(projectTypes map[string]ProjectConfig) (string, error) {
+func promptProjectType(projectTypes map[string]ProjectType) (string, error) {
 	ids := sortedIDs(projectTypes)
 	if len(ids) == 0 {
 		return "", errors.New("no project types available")
@@ -375,7 +697,7 @@ func promptProjectType(projectTypes map[string]ProjectConfig) (string, error) {
 
 	fmt.Println("Select a project type:")
 	for i, id := range ids {
-		cfg := projectTypes[id]
+		cfg := projectTypes[id].Config
 		label := cfg.Name
 		if label == "" {
 			label = id
@@ -397,28 +719,36 @@ func promptProjectType(projectTypes map[string]ProjectConfig) (string, error) {
 	return ids[index-1], nil
 }
 
-func createSkillDirs(rootDir string, cfg ProjectConfig) error {
-	desiredSkills := make(map[string]struct{})
-	for _, skill := range cfg.Skills {
-		skill = strings.TrimSpace(skill)
-		if skill == "" {
-			continue
-		}
-		desiredSkills[skill] = struct{}{}
-	}
-	if len(desiredSkills) == 0 {
-		return errors.New("project type has no skills configured")
+func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig ResolvedToolConfig) error {
+	targets := []struct {
+		label  string
+		path   string
+		skills []string
+	}{
+		{
+			label:  "codex",
+			path:   filepath.Join(rootDir, ".codex", "skills"),
+			skills: codexConfig.Skills,
+		},
+		{
+			label:  "claude",
+			path:   filepath.Join(rootDir, ".claude", "skills"),
+			skills: claudeConfig.Skills,
+		},
 	}
 
-	skillTargets := []string{
-		filepath.Join(rootDir, ".claude", "skills"),
-		filepath.Join(rootDir, ".codex", "skills"),
-	}
-	for _, target := range skillTargets {
-		if err := os.MkdirAll(target, defaultDirPermission); err != nil {
+	for _, target := range targets {
+		if len(target.skills) == 0 {
+			return fmt.Errorf("project type has no skills configured for %s", target.label)
+		}
+		desiredSkills := make(map[string]struct{}, len(target.skills))
+		for _, skill := range target.skills {
+			desiredSkills[skill] = struct{}{}
+		}
+		if err := os.MkdirAll(target.path, defaultDirPermission); err != nil {
 			return err
 		}
-		entries, err := os.ReadDir(target)
+		entries, err := os.ReadDir(target.path)
 		if err != nil {
 			return err
 		}
@@ -426,27 +756,24 @@ func createSkillDirs(rootDir string, cfg ProjectConfig) error {
 			if _, ok := desiredSkills[entry.Name()]; ok {
 				continue
 			}
-			if err := os.RemoveAll(filepath.Join(target, entry.Name())); err != nil {
+			if err := os.RemoveAll(filepath.Join(target.path, entry.Name())); err != nil {
 				return err
 			}
 		}
-	}
 
-	for _, skill := range cfg.Skills {
-		skill = strings.TrimSpace(skill)
-		if skill == "" {
-			continue
-		}
-		sourcePath := filepath.ToSlash(filepath.Join(skillTemplatesDir, skill))
-		if _, err := fs.Stat(templatesFS, sourcePath); err != nil {
-			return fmt.Errorf("skill template not found: %s", skill)
-		}
-		for _, targetRoot := range skillTargets {
-			targetPath := filepath.Join(targetRoot, skill)
+		for _, skill := range target.skills {
+			sourcePath := filepath.Join(templateRoot, skillTemplatesDir, skill)
+			if _, err := os.Stat(sourcePath); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("skill template not found: %s", skill)
+				}
+				return err
+			}
+			targetPath := filepath.Join(target.path, skill)
 			if err := os.MkdirAll(targetPath, defaultDirPermission); err != nil {
 				return err
 			}
-			if err := copyEmbeddedDir(sourcePath, targetPath); err != nil {
+			if err := copyDir(sourcePath, targetPath); err != nil {
 				return err
 			}
 		}
@@ -454,23 +781,151 @@ func createSkillDirs(rootDir string, cfg ProjectConfig) error {
 	return nil
 }
 
-func writeRootDocs(rootDir string, cfg ProjectConfig) error {
-	agentsContent, err := renderSnippets(agentsSnippetsDir, cfg.Agents.Snippets)
-	if err != nil {
-		return fmt.Errorf("agents snippets: %w", err)
+func createCommandDirs(rootDir, templateRoot string, codexConfig, claudeConfig ResolvedToolConfig) error {
+	targets := []struct {
+		path     string
+		commands []string
+	}{
+		{
+			path:     filepath.Join(rootDir, ".opencode", "command"),
+			commands: codexConfig.Commands,
+		},
+		{
+			path:     filepath.Join(rootDir, ".claude", "commands"),
+			commands: claudeConfig.Commands,
+		},
 	}
-	claudeSnippets := cfg.Claude.Snippets
-	if len(claudeSnippets) == 0 {
-		claudeSnippets = cfg.Agents.Snippets
-	}
-	claudeContent, err := renderSnippets(claudeSnippetsDir, claudeSnippets)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			claudeContent, err = renderSnippets(agentsSnippetsDir, claudeSnippets)
+
+	for _, target := range targets {
+		if len(target.commands) == 0 {
+			continue
 		}
+		normalizedCommands := make([]string, 0, len(target.commands))
+		desiredCommands := make(map[string]struct{}, len(target.commands))
+		for _, command := range target.commands {
+			filename := commandTemplateFilename(command)
+			if filename == "" {
+				continue
+			}
+			if _, ok := desiredCommands[filename]; ok {
+				continue
+			}
+			desiredCommands[filename] = struct{}{}
+			normalizedCommands = append(normalizedCommands, filename)
+		}
+		if len(normalizedCommands) == 0 {
+			continue
+		}
+		if err := os.MkdirAll(target.path, defaultDirPermission); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(target.path)
 		if err != nil {
-			return fmt.Errorf("claude snippets: %w", err)
+			return err
 		}
+		for _, entry := range entries {
+			if _, ok := desiredCommands[entry.Name()]; ok {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(target.path, entry.Name())); err != nil {
+				return err
+			}
+		}
+
+		for _, command := range normalizedCommands {
+			sourcePath := filepath.Join(templateRoot, commandTemplatesDir, command)
+			if _, err := os.Stat(sourcePath); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("command template not found: %s", command)
+				}
+				return err
+			}
+			targetPath := filepath.Join(target.path, command)
+			if err := copyFile(sourcePath, targetPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type openCodeConfig struct {
+	Mcp    map[string]any `json:"mcp"`
+	Schema string         `json:"$schema"`
+}
+
+type mcpConfig struct {
+	McpServers map[string]any `json:"mcpServers"`
+}
+
+func loadMcpEntries(templateRoot string, mcpNames []string) (map[string]any, error) {
+	mcpEntries := make(map[string]any)
+	for _, mcpName := range mcpNames {
+		templatePath := filepath.Join(templateRoot, mcpTemplatesDir, mcpTemplateFilename(mcpName))
+		entry, missingEnv, err := loadMcpTemplate(templatePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("mcp template not found: %s", mcpName)
+			}
+			return nil, err
+		}
+		if len(missingEnv) > 0 {
+			warnMissingEnv(templatePath, missingEnv)
+		}
+		if len(entry) == 0 {
+			return nil, fmt.Errorf("mcp template empty: %s", templatePath)
+		}
+		for key, value := range entry {
+			if _, exists := mcpEntries[key]; exists {
+				return nil, fmt.Errorf("duplicate mcp entry: %s", key)
+			}
+			mcpEntries[key] = value
+		}
+	}
+	return mcpEntries, nil
+}
+
+func writeOpenCodeConfig(rootDir string, mcpEntries map[string]any) error {
+	path := filepath.Join(rootDir, opencodeConfigFilename)
+	payload, err := json.MarshalIndent(openCodeConfig{
+		Mcp:    mcpEntries,
+		Schema: "https://opencode.ai/config.json",
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	return writeFile(path, payload)
+}
+
+func writeMcpConfig(rootDir string, mcpEntries map[string]any) error {
+	path := filepath.Join(rootDir, mcpConfigFilename)
+	mcpServers := make(map[string]any, len(mcpEntries))
+	for name, value := range mcpEntries {
+		server, ok := value.(map[string]any)
+		if !ok {
+			mcpServers[name] = value
+			continue
+		}
+		mcpServers[name] = normalizeMcpServer(server)
+	}
+	payload, err := json.MarshalIndent(mcpConfig{McpServers: mcpServers}, "", "  ")
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	return writeFile(path, payload)
+}
+
+func writeRootDocs(rootDir, templateRoot string, codexConfig, claudeConfig ResolvedToolConfig) error {
+	codexContent, err := renderSnippets(templateRoot, snippetsDir, codexConfig.Snippets)
+	if err != nil {
+		return fmt.Errorf("codex snippets: %w", err)
+	}
+	claudeSnippets := claudeConfig.Snippets
+	claudeContent, err := renderSnippets(templateRoot, snippetsDir, claudeSnippets)
+	if err != nil {
+		return fmt.Errorf("claude snippets: %w", err)
 	}
 
 	rootClaudePath := filepath.Join(rootDir, claudeFilename)
@@ -491,7 +946,7 @@ func writeRootDocs(rootDir string, cfg ProjectConfig) error {
 	if err := os.MkdirAll(filepath.Dir(agentsPath), defaultDirPermission); err != nil {
 		return err
 	}
-	if err := os.WriteFile(agentsPath, []byte(agentsContent), defaultFilePermission); err != nil {
+	if err := writeFile(agentsPath, []byte(codexContent)); err != nil {
 		return err
 	}
 
@@ -499,13 +954,13 @@ func writeRootDocs(rootDir string, cfg ProjectConfig) error {
 	if err := os.MkdirAll(filepath.Dir(claudePath), defaultDirPermission); err != nil {
 		return err
 	}
-	if err := os.WriteFile(claudePath, []byte(claudeContent), defaultFilePermission); err != nil {
+	if err := writeFile(claudePath, []byte(claudeContent)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func renderSnippets(dir string, snippetNames []string) (string, error) {
+func renderSnippets(templateRoot, dir string, snippetNames []string) (string, error) {
 	if len(snippetNames) == 0 {
 		return "", nil
 	}
@@ -515,8 +970,8 @@ func renderSnippets(dir string, snippetNames []string) (string, error) {
 		if name == "" {
 			continue
 		}
-		path := filepath.ToSlash(filepath.Join(dir, name+".md"))
-		data, err := templatesFS.ReadFile(path)
+		path := filepath.Join(templateRoot, dir, name+".md")
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return "", err
 		}
@@ -525,8 +980,8 @@ func renderSnippets(dir string, snippetNames []string) (string, error) {
 	return strings.Join(sections, "\n\n") + "\n", nil
 }
 
-func copyEmbeddedDir(sourceDir, targetDir string) error {
-	return fs.WalkDir(templatesFS, sourceDir, func(path string, entry fs.DirEntry, err error) error {
+func copyDir(sourceDir, targetDir string) error {
+	return filepath.WalkDir(sourceDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -537,19 +992,48 @@ func copyEmbeddedDir(sourceDir, targetDir string) error {
 		if relative == "." {
 			return nil
 		}
-		targetPath := filepath.Join(targetDir, filepath.FromSlash(relative))
+		targetPath := filepath.Join(targetDir, relative)
 		if entry.IsDir() {
 			return os.MkdirAll(targetPath, defaultDirPermission)
 		}
-		data, err := templatesFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(targetPath, data, defaultFilePermission)
+		return copyFile(path, targetPath)
 	})
 }
 
-func sortedIDs(projectTypes map[string]ProjectConfig) []string {
+func copyFile(sourcePath, targetPath string) error {
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return err
+	}
+	return writeFile(targetPath, data)
+}
+
+func writeFile(path string, data []byte) error {
+	created := false
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			created = true
+		} else {
+			return err
+		}
+	}
+	if err := os.WriteFile(path, data, defaultFilePermission); err != nil {
+		return err
+	}
+	if created {
+		logCreated(path)
+	}
+	return nil
+}
+
+func logCreated(path string) {
+	if !verboseOutput {
+		return
+	}
+	fmt.Printf("Created %s\n", path)
+}
+
+func sortedIDs(projectTypes map[string]ProjectType) []string {
 	ids := make([]string, 0, len(projectTypes))
 	for id := range projectTypes {
 		ids = append(ids, id)

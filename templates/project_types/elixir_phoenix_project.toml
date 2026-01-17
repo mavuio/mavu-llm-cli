@@ -1,6 +1,7 @@
 name = "Elixir Phoenix"
 description = "Phoenix + Elixir project"
 skills = ["elixir-architect", "prod-eval", "bit-ship", "phoenix-server"]
+commands = ["teach"]
+mcps = ["tidewave"]
 
-[agents]
 snippets = ["elixir_rules", "beans_usage", "plan"]
