@@ -1,0 +1,7 @@
+{
+  "tidewave": {
+    "type": "remote",
+    "url": "http://localhost:$PHX_PORT/tidewave/mcp",
+    "enabled": true
+  }
+}

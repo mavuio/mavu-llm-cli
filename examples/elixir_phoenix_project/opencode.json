@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "tidewave": {
+      "enabled": true,
+      "type": "remote",
+      "url": "http://localhost:${PHX_PORT}/tidewave/mcp"
+    }
+  },
+  "$schema": "https://opencode.ai/config.json"
+}

@@ -1,0 +1,7 @@
+{
+  "demo": {
+    "type": "remote",
+    "url": "http://localhost:4123/demo/mcp",
+    "enabled": true
+  }
+}

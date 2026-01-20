@@ -1,0 +1,9 @@
+name = "Generic PHP Project"
+description = "Generic PHP Project"
+
+
+skills = ["prod-connect","beans","beans-stats", "dokku-helper"]
+commands = ["teach"]
+mcps = []
+
+snippets = ["beans_usage", "plan"]
