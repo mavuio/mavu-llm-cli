@@ -29,13 +29,15 @@ const (
 	templatesEnvVar        = "MAVU_LLM_TEMPLATES_DIR"
 	agentsFilename         = "AGENTS.md"
 	claudeFilename         = "CLAUDE.md"
-	projectConfigFilename  = ".mavu_llm.toml"
+	mavuDirName            = ".mavu"
+	localConfigFilename    = "config.toml"
+	legacyConfigFilename   = ".mavu_llm.toml"
 	opencodeConfigFilename = "opencode.json"
 	mcpConfigFilename      = ".mcp.json"
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.1.7"
+	version                = "0.1.8"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -181,6 +183,14 @@ func listTemplatePaths() error {
 	if env := strings.TrimSpace(os.Getenv(templatesEnvVar)); env != "" {
 		fmt.Printf("Using %s=%s\n", templatesEnvVar, env)
 	}
+
+	// Show local project skills info
+	cwd, _ := os.Getwd()
+	localSkillsPath := filepath.Join(cwd, mavuDirName, skillTemplatesDir)
+	if _, err := os.Stat(localSkillsPath); err == nil {
+		fmt.Printf("Local project skills: %s (takes precedence)\n", localSkillsPath)
+	}
+
 	fmt.Println("Template roots:")
 	for _, root := range roots {
 		fmt.Printf("  %s\n", root)
@@ -664,8 +674,37 @@ func templateRoots() ([]string, error) {
 	return roots, nil
 }
 
+// projectConfigPath returns the path to the project config file.
+// Checks .mavu/config.toml first (new), falls back to .mavu_llm.toml (legacy).
+func projectConfigPath(rootDir string) (string, bool, error) {
+	// Check new location first
+	newPath := filepath.Join(rootDir, mavuDirName, localConfigFilename)
+	if _, err := os.Stat(newPath); err == nil {
+		return newPath, false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+
+	// Fall back to legacy location
+	legacyPath := filepath.Join(rootDir, legacyConfigFilename)
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyPath, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+
+	return "", false, fmt.Errorf("no project config found (checked %s and %s)", newPath, legacyPath)
+}
+
 func writeProjectTypeFile(rootDir, projectTypeID string) error {
-	path := filepath.Join(rootDir, projectConfigFilename)
+	// Create .mavu directory if it doesn't exist
+	mavuDir := filepath.Join(rootDir, mavuDirName)
+	if err := os.MkdirAll(mavuDir, defaultDirPermission); err != nil {
+		return err
+	}
+
+	// Write to new location
+	path := filepath.Join(mavuDir, localConfigFilename)
 	payload, err := toml.Marshal(ProjectTypeFile{Type: projectTypeID})
 	if err != nil {
 		return err
@@ -674,7 +713,14 @@ func writeProjectTypeFile(rootDir, projectTypeID string) error {
 }
 
 func readProjectTypeFile(rootDir string) (string, error) {
-	path := filepath.Join(rootDir, projectConfigFilename)
+	path, isLegacy, err := projectConfigPath(rootDir)
+	if err != nil {
+		return "", err
+	}
+	if isLegacy {
+		fmt.Printf("Note: Found legacy config at %s (will migrate to %s on next update)\n",
+			legacyConfigFilename, filepath.Join(mavuDirName, localConfigFilename))
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
@@ -719,7 +765,79 @@ func promptProjectType(projectTypes map[string]ProjectType) (string, error) {
 	return ids[index-1], nil
 }
 
+// discoverLocalSkills scans .mavu/skill_templates/ and returns all local skill names.
+func discoverLocalSkills(rootDir string) ([]string, error) {
+	localSkillsDir := filepath.Join(rootDir, mavuDirName, skillTemplatesDir)
+	entries, err := os.ReadDir(localSkillsDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var skills []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			skills = append(skills, entry.Name())
+		}
+	}
+	return skills, nil
+}
+
+// mergeSkills combines configured skills with local skills.
+// Local skills are added to the list, maintaining order (configured first, then local-only).
+func mergeSkills(configured, local []string) []string {
+	if len(local) == 0 {
+		return configured
+	}
+
+	seen := make(map[string]struct{}, len(configured))
+	for _, skill := range configured {
+		seen[skill] = struct{}{}
+	}
+
+	merged := make([]string, len(configured))
+	copy(merged, configured)
+
+	for _, skill := range local {
+		if _, ok := seen[skill]; !ok {
+			merged = append(merged, skill)
+		}
+	}
+	return merged
+}
+
+// findSkillTemplatePath finds the skill template directory.
+// Returns local project skill if found, otherwise returns global template skill.
+func findSkillTemplatePath(rootDir, templateRoot, skillName string) (string, error) {
+	// Check local project skill first (takes precedence)
+	localPath := filepath.Join(rootDir, mavuDirName, skillTemplatesDir, skillName)
+	if info, err := os.Stat(localPath); err == nil && info.IsDir() {
+		return localPath, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	// Fall back to global template skill
+	globalPath := filepath.Join(templateRoot, skillTemplatesDir, skillName)
+	if info, err := os.Stat(globalPath); err == nil && info.IsDir() {
+		return globalPath, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	return "", fmt.Errorf("skill template not found: %s (checked %s and %s)",
+		skillName, localPath, globalPath)
+}
+
 func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig ResolvedToolConfig) error {
+	// Discover local skills from .mavu/skill_templates/
+	localSkills, err := discoverLocalSkills(rootDir)
+	if err != nil {
+		return fmt.Errorf("discover local skills: %w", err)
+	}
+
 	targets := []struct {
 		label  string
 		path   string
@@ -728,12 +846,12 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 		{
 			label:  "codex",
 			path:   filepath.Join(rootDir, ".codex", "skills"),
-			skills: codexConfig.Skills,
+			skills: mergeSkills(codexConfig.Skills, localSkills),
 		},
 		{
 			label:  "claude",
 			path:   filepath.Join(rootDir, ".claude", "skills"),
-			skills: claudeConfig.Skills,
+			skills: mergeSkills(claudeConfig.Skills, localSkills),
 		},
 	}
 
@@ -752,21 +870,57 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 		if err != nil {
 			return err
 		}
+		var toRemove []string
 		for _, entry := range entries {
 			if _, ok := desiredSkills[entry.Name()]; ok {
 				continue
 			}
-			if err := os.RemoveAll(filepath.Join(target.path, entry.Name())); err != nil {
+			toRemove = append(toRemove, entry.Name())
+		}
+		if len(toRemove) > 0 {
+			fmt.Printf("Warning: %d skill(s) not in config will be removed from %s: %s\n", len(toRemove), target.label, strings.Join(toRemove, ", "))
+			fmt.Print("Move to .mavu/skill_templates/ to keep them? [y/N]: ")
+			reader := bufio.NewReader(os.Stdin)
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(strings.ToLower(input))
+
+			if input == "y" || input == "yes" {
+				localSkillsDir := filepath.Join(rootDir, mavuDirName, skillTemplatesDir)
+				if err := os.MkdirAll(localSkillsDir, defaultDirPermission); err != nil {
+					return err
+				}
+				for _, name := range toRemove {
+					src := filepath.Join(target.path, name)
+					dst := filepath.Join(localSkillsDir, name)
+					if _, err := os.Stat(dst); err == nil {
+						fmt.Printf("  Skipping %s (already exists in .mavu/skill_templates/)\n", name)
+						continue
+					}
+					if err := os.Rename(src, dst); err != nil {
+						return fmt.Errorf("move %s: %w", name, err)
+					}
+					fmt.Printf("  Moved %s to .mavu/skill_templates/\n", name)
+				}
+				// Re-discover local skills and update desired skills
+				localSkills, err = discoverLocalSkills(rootDir)
+				if err != nil {
+					return fmt.Errorf("re-discover local skills: %w", err)
+				}
+				for _, skill := range localSkills {
+					desiredSkills[skill] = struct{}{}
+				}
+				toRemove = nil // Clear since we moved them
+			}
+		}
+		for _, name := range toRemove {
+			if err := os.RemoveAll(filepath.Join(target.path, name)); err != nil {
 				return err
 			}
 		}
 
 		for _, skill := range target.skills {
-			sourcePath := filepath.Join(templateRoot, skillTemplatesDir, skill)
-			if _, err := os.Stat(sourcePath); err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					return fmt.Errorf("skill template not found: %s", skill)
-				}
+			sourcePath, err := findSkillTemplatePath(rootDir, templateRoot, skill)
+			if err != nil {
 				return err
 			}
 			targetPath := filepath.Join(target.path, skill)

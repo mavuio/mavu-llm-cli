@@ -37,7 +37,7 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 		t.Fatalf("run init: %v", err)
 	}
 
-	assertFileExists(t, filepath.Join(rootDir, projectConfigFilename))
+	assertFileExists(t, filepath.Join(rootDir, mavuDirName, localConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, opencodeConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, mcpConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, ".codex", agentsFilename))
