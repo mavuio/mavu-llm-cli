@@ -276,7 +276,7 @@ func captureOutput(t *testing.T, fn func()) string {
 func createTemplateRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	dirs := []string{projectTypesDir, skillTemplatesDir, commandTemplatesDir, mcpTemplatesDir, snippetsDir}
+	dirs := []string{projectTypesDir, skillTemplatesDir, commandTemplatesDir, mcpTemplatesDir, sessionTemplatesDir, snippetsDir}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
@@ -346,5 +346,275 @@ func assertDirExists(t *testing.T, path string) {
 	}
 	if !info.IsDir() {
 		t.Fatalf("expected directory but found file: %s", path)
+	}
+}
+
+func TestSessionsGenerateVSCodeTasks(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "sessions_test.toml"), `name = "Sessions Test"
+skills = ["core-skill"]
+autostart_sessions = ["dev_server", "watch_css"]
+ondemand_sessions = ["deploy", "logs"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "dev_server.toml"), `name = "Dev Server"
+command = "mix phx.server"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "watch_css.toml"), `name = "Watch CSS"
+command = "pnpm watch-css"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "deploy.toml"), `name = "Deploy"
+command = "git push dokku main"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "logs.toml"), `name = "Logs"
+command = "dokku logs -t"
+`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "sessions_test", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	tasksPath := filepath.Join(rootDir, ".vscode", "tasks.json")
+	assertFileExists(t, tasksPath)
+
+	var tasksJSON map[string]any
+	loadJSON(t, tasksPath, &tasksJSON)
+
+	if tasksJSON["version"] != "2.0.0" {
+		t.Fatalf("expected version 2.0.0, got %v", tasksJSON["version"])
+	}
+
+	tasks, ok := tasksJSON["tasks"].([]any)
+	if !ok {
+		t.Fatal("expected tasks array")
+	}
+	// 4 individual tasks + 1 compound task
+	if len(tasks) != 5 {
+		t.Fatalf("expected 5 tasks, got %d", len(tasks))
+	}
+
+	// Check autostart tasks have runOn: folderOpen
+	tasksByLabel := make(map[string]map[string]any)
+	for _, task := range tasks {
+		taskMap := task.(map[string]any)
+		label := taskMap["label"].(string)
+		tasksByLabel[label] = taskMap
+	}
+
+	// Autostart sessions should have runOptions
+	devServer := tasksByLabel["Dev Server"]
+	if devServer == nil {
+		t.Fatal("expected Dev Server task")
+	}
+	runOptions, ok := devServer["runOptions"].(map[string]any)
+	if !ok {
+		t.Fatal("expected runOptions for autostart task")
+	}
+	if runOptions["runOn"] != "folderOpen" {
+		t.Fatalf("expected runOn folderOpen, got %v", runOptions["runOn"])
+	}
+
+	// Ondemand sessions should NOT have runOptions
+	deploy := tasksByLabel["Deploy"]
+	if deploy == nil {
+		t.Fatal("expected Deploy task")
+	}
+	if _, hasRunOptions := deploy["runOptions"]; hasRunOptions {
+		t.Fatal("ondemand task should not have runOptions")
+	}
+
+	// Compound task should depend on autostart sessions
+	compound := tasksByLabel["__ Start Default Terminal Sessions"]
+	if compound == nil {
+		t.Fatal("expected compound task")
+	}
+	dependsOn, ok := compound["dependsOn"].([]any)
+	if !ok {
+		t.Fatal("expected dependsOn array in compound task")
+	}
+	if len(dependsOn) != 2 {
+		t.Fatalf("expected 2 dependencies, got %d", len(dependsOn))
+	}
+}
+
+func TestSessionsMissingTemplate(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "missing_session.toml"), `name = "Missing Session"
+skills = ["core-skill"]
+autostart_sessions = ["nonexistent"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	err := runInit([]string{"--type", "missing_session", "--path", rootDir})
+	if err == nil {
+		t.Fatal("expected missing session template error")
+	}
+	if !strings.Contains(err.Error(), "session template not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSessionsMissingCommand(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "empty_session.toml"), `name = "Empty Session"
+skills = ["core-skill"]
+ondemand_sessions = ["empty"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "empty.toml"), `name = "Empty"
+`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	err := runInit([]string{"--type", "empty_session", "--path", rootDir})
+	if err == nil {
+		t.Fatal("expected session missing command error")
+	}
+	if !strings.Contains(err.Error(), "missing command") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSessionsNoSessionsConfigured(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "no_sessions.toml"), `name = "No Sessions"
+skills = ["core-skill"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "no_sessions", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	// No tasks.json should be created
+	tasksPath := filepath.Join(rootDir, ".vscode", "tasks.json")
+	assertFileNotExists(t, tasksPath)
+}
+
+func TestSessionsLocalConfigAppend(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "local_sessions.toml"), `name = "Local Sessions"
+skills = ["core-skill"]
+autostart_sessions = ["dev_server"]
+ondemand_sessions = ["deploy"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "dev_server.toml"), `name = "Dev Server"
+command = "mix phx.server"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "deploy.toml"), `name = "Deploy"
+command = "git push"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "watch_css.toml"), `name = "Watch CSS"
+command = "pnpm watch"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "logs.toml"), `name = "Logs"
+command = "tail -f log"
+`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	// First init
+	if err := runInit([]string{"--type", "local_sessions", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	// Add local config with append
+	localConfig := filepath.Join(rootDir, mavuDirName, localConfigFilename)
+	localContent := `type = "local_sessions"
+autostart_sessions_append = ["watch_css"]
+ondemand_sessions_append = ["logs"]
+`
+	if err := os.WriteFile(localConfig, []byte(localContent), 0o644); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
+
+	// Run update
+	if err := runUpdate([]string{"--path", rootDir}); err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+
+	tasksPath := filepath.Join(rootDir, ".vscode", "tasks.json")
+	var tasksJSON map[string]any
+	loadJSON(t, tasksPath, &tasksJSON)
+
+	tasks := tasksJSON["tasks"].([]any)
+	tasksByLabel := make(map[string]bool)
+	for _, task := range tasks {
+		taskMap := task.(map[string]any)
+		tasksByLabel[taskMap["label"].(string)] = true
+	}
+
+	// Check all sessions are present
+	expectedTasks := []string{"Dev Server", "Watch CSS", "Deploy", "Logs", "__ Start Default Terminal Sessions"}
+	for _, label := range expectedTasks {
+		if !tasksByLabel[label] {
+			t.Fatalf("expected task %q not found", label)
+		}
+	}
+}
+
+func TestSessionsLocalConfigOverride(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "override_sessions.toml"), `name = "Override Sessions"
+skills = ["core-skill"]
+autostart_sessions = ["dev_server", "watch_css"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "dev_server.toml"), `name = "Dev Server"
+command = "mix phx.server"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "watch_css.toml"), `name = "Watch CSS"
+command = "pnpm watch"
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(sessionTemplatesDir, "custom.toml"), `name = "Custom"
+command = "custom cmd"
+`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "override_sessions", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	// Override autostart sessions completely
+	localConfig := filepath.Join(rootDir, mavuDirName, localConfigFilename)
+	localContent := `type = "override_sessions"
+autostart_sessions = ["custom"]
+`
+	if err := os.WriteFile(localConfig, []byte(localContent), 0o644); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
+
+	if err := runUpdate([]string{"--path", rootDir}); err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+
+	tasksPath := filepath.Join(rootDir, ".vscode", "tasks.json")
+	var tasksJSON map[string]any
+	loadJSON(t, tasksPath, &tasksJSON)
+
+	tasks := tasksJSON["tasks"].([]any)
+	tasksByLabel := make(map[string]bool)
+	for _, task := range tasks {
+		taskMap := task.(map[string]any)
+		tasksByLabel[taskMap["label"].(string)] = true
+	}
+
+	// Only custom should be present (override replaces entirely)
+	if !tasksByLabel["Custom"] {
+		t.Fatal("expected Custom task")
+	}
+	if tasksByLabel["Dev Server"] {
+		t.Fatal("Dev Server should be overridden")
+	}
+	if tasksByLabel["Watch CSS"] {
+		t.Fatal("Watch CSS should be overridden")
 	}
 }

@@ -1,0 +1,3 @@
+name = "Prod File Sync"
+command = 'scp_modified_auto.sh "$(echo $MAVU_TARGET)"'
+

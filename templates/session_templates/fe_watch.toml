@@ -1,0 +1,3 @@
+name = "CSS FE Watch"
+command = "cd assets; pnpm watch-css"
+

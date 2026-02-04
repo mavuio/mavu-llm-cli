@@ -1,0 +1,2 @@
+name = "Bar Session"
+command = "echo 'Hello, Bar!'"

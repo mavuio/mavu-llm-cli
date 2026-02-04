@@ -5,3 +5,6 @@ commands = ["teach"]
 mcps = ["tidewave"]
 
 snippets = ["elixir_rules", "beans_usage", "plan"]
+
+autostart_sessions = ["be_watch", "fe_watch", "git_status"]
+ondemand_sessions = ["prod_file_sync", "remote_iex", "dokku_enter", "dokku_log"]

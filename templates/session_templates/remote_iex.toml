@@ -1,0 +1,5 @@
+name = "Remote IEx"
+command = "dokku enter web /bin/bash bin/iex.sh"
+
+
+

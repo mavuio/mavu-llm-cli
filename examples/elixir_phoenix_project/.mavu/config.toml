@@ -1,1 +1,5 @@
 type = 'elixir_phoenix_project'
+autostart_sessions = []
+autostart_sessions_append = []
+ondemand_sessions = []
+ondemand_sessions_append = []

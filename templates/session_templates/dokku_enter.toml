@@ -1,0 +1,3 @@
+name = "Dokku Enter"
+command = "dokku enter  web"
+

@@ -1,0 +1,3 @@
+name = "CSS BE Watch"
+command = "cd be_assets; pnpm watch-css"
+

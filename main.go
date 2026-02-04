@@ -26,6 +26,8 @@ const (
 	commandTemplateExt     = ".md"
 	mcpTemplatesDir        = "mcp_templates"
 	mcpTemplateExt         = ".mcp.json"
+	sessionTemplatesDir    = "session_templates"
+	sessionTemplateExt     = ".toml"
 	templatesEnvVar        = "MAVU_LLM_TEMPLATES_DIR"
 	agentsFilename         = "AGENTS.md"
 	claudeFilename         = "CLAUDE.md"
@@ -37,7 +39,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.1.8"
+	version                = "0.2.0"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -45,15 +47,22 @@ const (
 var verboseOutput bool
 
 type ProjectConfig struct {
-	Name        string     `toml:"name"`
-	Description string     `toml:"description"`
-	Skills      []string   `toml:"skills"`
-	Commands    []string   `toml:"commands"`
-	Mcps        []string   `toml:"mcps"`
-	Snippets    []string   `toml:"snippets"`
-	Claude      ToolConfig `toml:"claude"`
-	Codex       ToolConfig `toml:"codex"`
-	Agents      ToolConfig `toml:"agents"`
+	Name              string     `toml:"name"`
+	Description       string     `toml:"description"`
+	Skills            []string   `toml:"skills"`
+	Commands          []string   `toml:"commands"`
+	Mcps              []string   `toml:"mcps"`
+	Snippets          []string   `toml:"snippets"`
+	AutostartSessions []string   `toml:"autostart_sessions"`
+	OndemandSessions  []string   `toml:"ondemand_sessions"`
+	Claude            ToolConfig `toml:"claude"`
+	Codex             ToolConfig `toml:"codex"`
+	Agents            ToolConfig `toml:"agents"`
+}
+
+type SessionTemplate struct {
+	Name    string `toml:"name"`
+	Command string `toml:"command"`
 }
 
 type ToolConfig struct {
@@ -79,7 +88,11 @@ type ProjectType struct {
 }
 
 type ProjectTypeFile struct {
-	Type string `toml:"type"`
+	Type                    string   `toml:"type"`
+	AutostartSessions       []string `toml:"autostart_sessions"`
+	AutostartSessionsAppend []string `toml:"autostart_sessions_append"`
+	OndemandSessions        []string `toml:"ondemand_sessions"`
+	OndemandSessionsAppend  []string `toml:"ondemand_sessions_append"`
 }
 
 func main() {
@@ -190,6 +203,10 @@ func listTemplatePaths() error {
 	if _, err := os.Stat(localSkillsPath); err == nil {
 		fmt.Printf("Local project skills: %s (takes precedence)\n", localSkillsPath)
 	}
+	localSessionsPath := filepath.Join(cwd, mavuDirName, sessionTemplatesDir)
+	if _, err := os.Stat(localSessionsPath); err == nil {
+		fmt.Printf("Local project sessions: %s (takes precedence)\n", localSessionsPath)
+	}
 
 	fmt.Println("Template roots:")
 	for _, root := range roots {
@@ -199,6 +216,7 @@ func listTemplatePaths() error {
 		fmt.Printf("    skill_templates: %s\n", filepath.Join(root, skillTemplatesDir))
 		fmt.Printf("    command_templates: %s\n", filepath.Join(root, commandTemplatesDir))
 		fmt.Printf("    mcp_templates: %s\n", filepath.Join(root, mcpTemplatesDir))
+		fmt.Printf("    session_templates: %s\n", filepath.Join(root, sessionTemplatesDir))
 	}
 	return nil
 }
@@ -241,7 +259,9 @@ func runInit(args []string) error {
 	if !ok {
 		return fmt.Errorf("unknown project type: %s", projectTypeID)
 	}
-	return runSetup(rootDir, projectType, "Initialized")
+	// For init, try to read existing local config (may not exist yet)
+	localConfig, _ := readLocalConfig(rootDir)
+	return runSetup(rootDir, projectType, localConfig, "Initialized")
 }
 
 func runUpdate(args []string) error {
@@ -263,7 +283,7 @@ func runUpdate(args []string) error {
 		rootDir = cwd
 	}
 
-	projectTypeID, err := readProjectTypeFile(rootDir)
+	localConfig, err := readLocalConfig(rootDir)
 	if err != nil {
 		return err
 	}
@@ -273,14 +293,14 @@ func runUpdate(args []string) error {
 		return err
 	}
 
-	projectType, ok := projectTypes[projectTypeID]
+	projectType, ok := projectTypes[localConfig.Type]
 	if !ok {
-		return fmt.Errorf("unknown project type: %s", projectTypeID)
+		return fmt.Errorf("unknown project type: %s", localConfig.Type)
 	}
-	return runSetup(rootDir, projectType, "Updated")
+	return runSetup(rootDir, projectType, localConfig, "Updated")
 }
 
-func runSetup(rootDir string, projectType ProjectType, action string) error {
+func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFile, action string) error {
 	cfg := projectType.Config
 	templateRoot := projectType.Root
 	codexConfig := resolveCodexConfig(cfg)
@@ -291,6 +311,14 @@ func runSetup(rootDir string, projectType ProjectType, action string) error {
 	}
 
 	if err := createCommandDirs(rootDir, templateRoot, codexConfig, claudeConfig); err != nil {
+		return err
+	}
+
+	// Merge sessions: local config can override or append to project type sessions
+	autostartSessions := mergeSessionsConfig(cfg.AutostartSessions, localConfig.AutostartSessions, localConfig.AutostartSessionsAppend)
+	ondemandSessions := mergeSessionsConfig(cfg.OndemandSessions, localConfig.OndemandSessions, localConfig.OndemandSessionsAppend)
+
+	if err := writeSessionTasks(rootDir, templateRoot, autostartSessions, ondemandSessions); err != nil {
 		return err
 	}
 
@@ -503,12 +531,33 @@ func uniqueOrdered(lists ...[]string) []string {
 	return combined
 }
 
+// mergeSessionsConfig merges session configuration.
+// If override is non-empty, it replaces defaults entirely.
+// Otherwise, appendList is appended to defaults.
+func mergeSessionsConfig(defaults, override, appendList []string) []string {
+	override = normalizedList(override)
+	if len(override) > 0 {
+		return override
+	}
+	defaults = normalizedList(defaults)
+	appendList = normalizedList(appendList)
+	return uniqueOrdered(defaults, appendList)
+}
+
 func commandTemplateFilename(name string) string {
 	trimmed := strings.TrimSpace(name)
 	if strings.HasSuffix(trimmed, commandTemplateExt) {
 		return trimmed
 	}
 	return trimmed + commandTemplateExt
+}
+
+func sessionTemplateFilename(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if strings.HasSuffix(trimmed, sessionTemplateExt) {
+		return trimmed
+	}
+	return trimmed + sessionTemplateExt
 }
 
 func mcpTemplateFilename(name string) string {
@@ -749,9 +798,17 @@ func writeProjectTypeFile(rootDir, projectTypeID string) error {
 }
 
 func readProjectTypeFile(rootDir string) (string, error) {
-	path, isLegacy, err := projectConfigPath(rootDir)
+	cfg, err := readLocalConfig(rootDir)
 	if err != nil {
 		return "", err
+	}
+	return cfg.Type, nil
+}
+
+func readLocalConfig(rootDir string) (ProjectTypeFile, error) {
+	path, isLegacy, err := projectConfigPath(rootDir)
+	if err != nil {
+		return ProjectTypeFile{}, err
 	}
 	if isLegacy {
 		fmt.Printf("Note: Found legacy config at %s (will migrate to %s on next update)\n",
@@ -759,16 +816,17 @@ func readProjectTypeFile(rootDir string) (string, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", path, err)
+		return ProjectTypeFile{}, fmt.Errorf("read %s: %w", path, err)
 	}
 	var cfg ProjectTypeFile
 	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return "", fmt.Errorf("parse %s: %w", path, err)
+		return ProjectTypeFile{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if strings.TrimSpace(cfg.Type) == "" {
-		return "", fmt.Errorf("%s missing type", path)
+		return ProjectTypeFile{}, fmt.Errorf("%s missing type", path)
 	}
-	return strings.TrimSpace(cfg.Type), nil
+	cfg.Type = strings.TrimSpace(cfg.Type)
+	return cfg, nil
 }
 
 func promptProjectType(projectTypes map[string]ProjectType) (string, error) {
@@ -865,6 +923,29 @@ func findSkillTemplatePath(rootDir, templateRoot, skillName string) (string, err
 
 	return "", fmt.Errorf("skill template not found: %s (checked %s and %s)",
 		skillName, localPath, globalPath)
+}
+
+func findSessionTemplatePath(rootDir, templateRoot, sessionName string) (string, error) {
+	filename := sessionTemplateFilename(sessionName)
+	if filename == "" {
+		return "", errors.New("session template name is empty")
+	}
+	localPath := filepath.Join(rootDir, mavuDirName, sessionTemplatesDir, filename)
+	if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+		return localPath, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	globalPath := filepath.Join(templateRoot, sessionTemplatesDir, filename)
+	if info, err := os.Stat(globalPath); err == nil && !info.IsDir() {
+		return globalPath, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	return "", fmt.Errorf("session template not found: %s (checked %s and %s)",
+		filename, localPath, globalPath)
 }
 
 func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig ResolvedToolConfig) error {
@@ -1037,6 +1118,131 @@ func createCommandDirs(rootDir, templateRoot string, codexConfig, claudeConfig R
 		}
 	}
 	return nil
+}
+
+func writeSessionTasks(rootDir, templateRoot string, autostartNames, ondemandNames []string) error {
+	autostart := uniqueOrdered(normalizedList(autostartNames))
+	ondemand := uniqueOrdered(normalizedList(ondemandNames))
+	allSessions := uniqueOrdered(autostart, ondemand)
+
+	if len(allSessions) == 0 {
+		return nil
+	}
+
+	autostartSet := make(map[string]struct{}, len(autostart))
+	for _, name := range autostart {
+		autostartSet[name] = struct{}{}
+	}
+
+	var tasks []map[string]any
+	for _, sessionName := range allSessions {
+		templatePath, err := findSessionTemplatePath(rootDir, templateRoot, sessionName)
+		if err != nil {
+			return err
+		}
+
+		session, err := loadSessionTemplate(templatePath)
+		if err != nil {
+			return err
+		}
+
+		_, isAutostart := autostartSet[sessionName]
+		task := buildVSCodeTask(sessionName, session, isAutostart)
+		tasks = append(tasks, task)
+	}
+
+	// Add compound task for autostart sessions if there are any
+	if len(autostart) > 0 {
+		var autostartLabels []string
+		for _, sessionName := range autostart {
+			templatePath, err := findSessionTemplatePath(rootDir, templateRoot, sessionName)
+			if err == nil {
+				session, err := loadSessionTemplate(templatePath)
+				if err == nil {
+					label := session.Name
+					if label == "" {
+						label = sessionName
+					}
+					autostartLabels = append(autostartLabels, label)
+				}
+			}
+		}
+		if len(autostartLabels) > 0 {
+			compoundTask := map[string]any{
+				"label":          "__ Start Default Terminal Sessions",
+				"dependsOn":      autostartLabels,
+				"problemMatcher": []any{},
+			}
+			tasks = append(tasks, compoundTask)
+		}
+	}
+
+	tasksJSON := map[string]any{
+		"version": "2.0.0",
+		"tasks":   tasks,
+	}
+
+	targetPath := filepath.Join(rootDir, ".vscode", "tasks.json")
+	if err := os.MkdirAll(filepath.Dir(targetPath), defaultDirPermission); err != nil {
+		return err
+	}
+
+	payload, err := json.MarshalIndent(tasksJSON, "", "  ")
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	return writeFile(targetPath, payload)
+}
+
+func loadSessionTemplate(path string) (SessionTemplate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SessionTemplate{}, err
+	}
+	var session SessionTemplate
+	if err := toml.Unmarshal(data, &session); err != nil {
+		return SessionTemplate{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if session.Command == "" {
+		return SessionTemplate{}, fmt.Errorf("session template missing command: %s", path)
+	}
+	return session, nil
+}
+
+func buildVSCodeTask(id string, session SessionTemplate, isAutostart bool) map[string]any {
+	label := session.Name
+	if label == "" {
+		label = id
+	}
+
+	command := session.Command + "; exec $SHELL"
+
+	task := map[string]any{
+		"label":        label,
+		"type":         "shell",
+		"command":      command,
+		"isBackground": true,
+		"problemMatcher": []any{},
+		"options": map[string]any{
+			"shell": map[string]any{
+				"args": []string{"-i", "-l"},
+			},
+		},
+		"presentation": map[string]any{
+			"panel": "dedicated",
+			"close": false,
+			"focus": true,
+		},
+	}
+
+	if isAutostart {
+		task["runOptions"] = map[string]any{
+			"runOn": "folderOpen",
+		}
+	}
+
+	return task
 }
 
 type openCodeConfig struct {

@@ -1,0 +1,163 @@
+{
+  "tasks": [
+    {
+      "command": "cd be_assets; pnpm watch-css; exec $SHELL",
+      "isBackground": true,
+      "label": "CSS BE Watch",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "type": "shell"
+    },
+    {
+      "command": "cd fe_assets; pnpm watch-css; exec $SHELL",
+      "isBackground": true,
+      "label": "CSS FE Watch",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "type": "shell"
+    },
+    {
+      "command": "git status; exec $SHELL",
+      "isBackground": true,
+      "label": "Git Status",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "type": "shell"
+    },
+    {
+      "command": "scp_modified_auto.sh \"$(echo $MAVU_TARGET)\"; exec $SHELL",
+      "isBackground": true,
+      "label": "Prod File Sync",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "type": "shell"
+    },
+    {
+      "command": "dokku enter web /bin/bash bin/iex.sh; exec $SHELL",
+      "isBackground": true,
+      "label": "Remote IEx",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "type": "shell"
+    },
+    {
+      "command": "dokku enter  web; exec $SHELL",
+      "isBackground": true,
+      "label": "Dokku Enter",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "type": "shell"
+    },
+    {
+      "command": "dokku logs -t; exec $SHELL",
+      "isBackground": true,
+      "label": "Dokku Log",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "type": "shell"
+    },
+    {
+      "dependsOn": [
+        "CSS BE Watch",
+        "CSS FE Watch",
+        "Git Status"
+      ],
+      "label": "__ Start Default Terminal Sessions",
+      "problemMatcher": []
+    }
+  ],
+  "version": "2.0.0"
+}
