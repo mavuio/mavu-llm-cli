@@ -13,9 +13,9 @@ You are evaluating Elixir code on the production server.
 
 2. If no code was provided, ask the user what code they want to evaluate
 
-3. Execute the code on the production server:
+3. Base64-encode the Elixir code and execute it on the production server using `--eval-b64`:
    ```bash
-   dokku enter web /bin/bash bin/iex.sh --eval "CODE_HERE"
+   dokku enter web /bin/bash bin/iex.sh --eval-b64 "BASE64_CODE_HERE"
    ```
 
 4. Return the result to the user
@@ -24,22 +24,40 @@ You are evaluating Elixir code on the production server.
 
 - This runs on PRODUCTION - be careful with destructive operations
 - The code is executed via RPC on the running Phoenix node
-- Complex code with quotes may need proper escaping
-- For multi-line code, consider using parentheses to group expressions
+- Always use `--eval-b64` (do not use `--eval` or `--eval-stdin`)
+- Base64 encoding avoids quoting/escaping issues and supports multi-line code
 
 ## Examples
 
-Simple evaluation:
+Simple evaluation (manual base64):
 ```bash
-dokku enter web /bin/bash bin/iex.sh --eval "1 + 1"
+python - <<'PY'
+import base64
+code = "1 + 1"
+print(base64.b64encode(code.encode()).decode())
+PY
+
+dokku enter web /bin/bash bin/iex.sh --eval-b64 "BASE64_CODE_HERE"
 ```
 
 Query example:
 ```bash
-dokku enter web /bin/bash bin/iex.sh --eval "MyApp.Repo.all(MyApp.User) |> length()"
+python - <<'PY'
+import base64
+code = "MyApp.Repo.all(MyApp.User) |> length()"
+print(base64.b64encode(code.encode()).decode())
+PY
+
+dokku enter web /bin/bash bin/iex.sh --eval-b64 "BASE64_CODE_HERE"
 ```
 
 Function call:
 ```bash
-dokku enter web /bin/bash bin/iex.sh --eval "MyApp.SomeModule.some_function(:arg)"
+python - <<'PY'
+import base64
+code = "MyApp.SomeModule.some_function(:arg)"
+print(base64.b64encode(code.encode()).decode())
+PY
+
+dokku enter web /bin/bash bin/iex.sh --eval-b64 "BASE64_CODE_HERE"
 ```

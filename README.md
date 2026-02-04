@@ -35,6 +35,55 @@ mavu-llm template-paths
 When a project type defines `mcps`, mavu-llm writes `opencode.json` and `.mcp.json`
 into the target directory using the MCP templates.
 
+## Local Project Configuration
+
+Projects can override global templates using the `.mavu/` directory:
+
+### Local Skills
+
+Create custom skills in `.mavu/skill_templates/<skill-name>/`:
+- Local skills are auto-discovered and added to both `.claude/skills/` and `.codex/skills/`
+- Local skills take precedence over global templates with the same name
+
+### Local MCPs
+
+Create project-specific MCP configurations in `.mavu/mcp.json`.
+
+**Flat format** (recommended):
+```json
+{
+  "my-local-mcp": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["./server.js"]
+  },
+  "tidewave": {
+    "type": "http",
+    "url": "http://localhost:9999/custom-path"
+  }
+}
+```
+
+**Wrapped format** (also supported):
+```json
+{
+  "mcpServers": {
+    "tidewave": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer token"
+      }
+    }
+  }
+}
+```
+
+- Local MCPs take precedence over global MCP templates
+- Supports environment variable expansion: `${VAR_NAME}`
+- Merged with global MCPs defined in project config
+- Written to both `.mcp.json` (Claude Desktop) and `opencode.json` (OpenCode)
+
 ## Templates
 
 mavu-llm loads templates from disk (nothing is embedded). Set

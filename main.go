@@ -296,7 +296,7 @@ func runSetup(rootDir string, projectType ProjectType, action string) error {
 
 	mcpNames := uniqueOrdered(codexConfig.Mcps, claudeConfig.Mcps)
 	if len(mcpNames) > 0 {
-		mcpEntries, err := loadMcpEntries(templateRoot, mcpNames)
+		mcpEntries, err := loadMcpEntries(rootDir, templateRoot, mcpNames)
 		if err != nil {
 			return err
 		}
@@ -544,6 +544,42 @@ func loadMcpTemplate(path string) (map[string]any, []string, error) {
 		return nil, missing, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return entry, missing, nil
+}
+
+// loadLocalMcpEntries loads MCP entries from .mavu/mcp.json if present.
+// Returns map of MCP server configs, missing env vars, and error.
+func loadLocalMcpEntries(rootDir string) (map[string]any, []string, error) {
+	localPath := filepath.Join(rootDir, mavuDirName, "mcp.json")
+
+	// Check if file exists
+	if _, err := os.Stat(localPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, nil // No local MCPs - not an error
+		}
+		return nil, nil, err
+	}
+
+	// Read and parse similar to loadMcpTemplate
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %s: %w", localPath, err)
+	}
+
+	// Expand env vars
+	expanded, missing := expandEnvVars(string(data))
+
+	// Parse JSON
+	var entries map[string]any
+	if err := json.Unmarshal([]byte(expanded), &entries); err != nil {
+		return nil, missing, fmt.Errorf("parse %s: %w", localPath, err)
+	}
+
+	// Support both flat format and wrapped format (with "mcpServers" key)
+	if mcpServers, ok := entries["mcpServers"].(map[string]any); ok {
+		return mcpServers, missing, nil
+	}
+
+	return entries, missing, nil
 }
 
 func expandEnvVars(input string) (string, []string) {
@@ -1012,8 +1048,23 @@ type mcpConfig struct {
 	McpServers map[string]any `json:"mcpServers"`
 }
 
-func loadMcpEntries(templateRoot string, mcpNames []string) (map[string]any, error) {
-	mcpEntries := make(map[string]any)
+func loadMcpEntries(rootDir, templateRoot string, mcpNames []string) (map[string]any, error) {
+	// Load local MCPs first (these take precedence)
+	localEntries, localMissing, err := loadLocalMcpEntries(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("load local mcps: %w", err)
+	}
+	if len(localMissing) > 0 {
+		warnMissingEnv(filepath.Join(rootDir, mavuDirName, "mcp.json"), localMissing)
+	}
+
+	// Start with local entries (these have precedence)
+	mcpEntries := make(map[string]any, len(localEntries))
+	for key, value := range localEntries {
+		mcpEntries[key] = value
+	}
+
+	// Load global templates - only add if not in local
 	for _, mcpName := range mcpNames {
 		templatePath := filepath.Join(templateRoot, mcpTemplatesDir, mcpTemplateFilename(mcpName))
 		entry, missingEnv, err := loadMcpTemplate(templatePath)
@@ -1029,9 +1080,12 @@ func loadMcpEntries(templateRoot string, mcpNames []string) (map[string]any, err
 		if len(entry) == 0 {
 			return nil, fmt.Errorf("mcp template empty: %s", templatePath)
 		}
+
+		// Merge entries - local takes precedence
 		for key, value := range entry {
-			if _, exists := mcpEntries[key]; exists {
-				return nil, fmt.Errorf("duplicate mcp entry: %s", key)
+			if _, existsInLocal := mcpEntries[key]; existsInLocal {
+				// Skip - local overrides global
+				continue
 			}
 			mcpEntries[key] = value
 		}

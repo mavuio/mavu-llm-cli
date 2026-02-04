@@ -48,10 +48,7 @@ custom classes must fully style the input
 - Ensure **clean typography, spacing, and layout balance** for a refined, premium look
 - Focus on **delightful details** like hover effects, loading states, and smooth page transitions
 
-# EXTREMELY IMPORTANT: Beans Usage Guide for Agents
-This project uses **beans**, an agentic-first issue tracker. Issues are called "beans" - markdown files with YAML frontmatter stored in `.beans/`. Use the beans CLI to manage them
-
-There is a skill explaining this further.
+**IMPORTANT**: before you do anything else, run the `beans prime` command and heed its output.
 
 ## Plan Mode
 
