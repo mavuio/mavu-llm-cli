@@ -1,6 +1,26 @@
 {
   "tasks": [
     {
+      "command": ". mvp; mvsrv; exec $SHELL",
+      "isBackground": true,
+      "label": "Phoenix Server",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "type": "shell"
+    },
+    {
       "command": "cd be_assets; pnpm watch-css; exec $SHELL",
       "isBackground": true,
       "label": "CSS BE Watch",
@@ -18,9 +38,6 @@
         "panel": "dedicated"
       },
       "problemMatcher": [],
-      "runOptions": {
-        "runOn": "folderOpen"
-      },
       "type": "shell"
     },
     {
@@ -41,15 +58,12 @@
         "panel": "dedicated"
       },
       "problemMatcher": [],
-      "runOptions": {
-        "runOn": "folderOpen"
-      },
       "type": "shell"
     },
     {
-      "command": "git status; exec $SHELL",
+      "command": ". mvp; exec $SHELL",
       "isBackground": true,
-      "label": "Git Status",
+      "label": "Plain Shell",
       "options": {
         "shell": {
           "args": [
@@ -64,9 +78,6 @@
         "panel": "dedicated"
       },
       "problemMatcher": [],
-      "runOptions": {
-        "runOn": "folderOpen"
-      },
       "type": "shell"
     },
     {
@@ -150,13 +161,37 @@
       "type": "shell"
     },
     {
+      "command": "iex --hidden --remsh ${PHX_NODE_NAME}@127.0.0.1  --cookie MAVU_COOKIE  --name peek1_${PHX_NODE_NAME}@127.0.0.1; exec $SHELL",
+      "isBackground": true,
+      "label": "Local IEx",
+      "options": {
+        "shell": {
+          "args": [
+            "-i",
+            "-l"
+          ]
+        }
+      },
+      "presentation": {
+        "close": false,
+        "focus": true,
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "type": "shell"
+    },
+    {
       "dependsOn": [
+        "Phoenix Server",
         "CSS BE Watch",
         "CSS FE Watch",
-        "Git Status"
+        "Plain Shell"
       ],
       "label": "__ Start Default Terminal Sessions",
-      "problemMatcher": []
+      "problemMatcher": [],
+      "runOptions": {
+        "runOn": "folderOpen"
+      }
     }
   ],
   "version": "2.0.0"

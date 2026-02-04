@@ -403,29 +403,16 @@ command = "dokku logs -t"
 		tasksByLabel[label] = taskMap
 	}
 
-	// Autostart sessions should have runOptions
+	// Individual tasks should NOT have runOptions
 	devServer := tasksByLabel["Dev Server"]
 	if devServer == nil {
 		t.Fatal("expected Dev Server task")
 	}
-	runOptions, ok := devServer["runOptions"].(map[string]any)
-	if !ok {
-		t.Fatal("expected runOptions for autostart task")
-	}
-	if runOptions["runOn"] != "folderOpen" {
-		t.Fatalf("expected runOn folderOpen, got %v", runOptions["runOn"])
+	if _, hasRunOptions := devServer["runOptions"]; hasRunOptions {
+		t.Fatal("individual task should not have runOptions")
 	}
 
-	// Ondemand sessions should NOT have runOptions
-	deploy := tasksByLabel["Deploy"]
-	if deploy == nil {
-		t.Fatal("expected Deploy task")
-	}
-	if _, hasRunOptions := deploy["runOptions"]; hasRunOptions {
-		t.Fatal("ondemand task should not have runOptions")
-	}
-
-	// Compound task should depend on autostart sessions
+	// Compound task should depend on autostart sessions and have runOn: folderOpen
 	compound := tasksByLabel["__ Start Default Terminal Sessions"]
 	if compound == nil {
 		t.Fatal("expected compound task")
@@ -436,6 +423,13 @@ command = "dokku logs -t"
 	}
 	if len(dependsOn) != 2 {
 		t.Fatalf("expected 2 dependencies, got %d", len(dependsOn))
+	}
+	runOptions, ok := compound["runOptions"].(map[string]any)
+	if !ok {
+		t.Fatal("expected runOptions on compound task")
+	}
+	if runOptions["runOn"] != "folderOpen" {
+		t.Fatalf("expected runOn folderOpen on compound task, got %v", runOptions["runOn"])
 	}
 }
 
