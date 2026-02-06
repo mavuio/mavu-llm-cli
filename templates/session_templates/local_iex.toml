@@ -1,0 +1,5 @@
+name = "Local IEx"
+command = "iex --hidden --remsh ${PHX_NODE_NAME}@127.0.0.1  --cookie MAVU_COOKIE  --name peek1_${PHX_NODE_NAME}@127.0.0.1"
+
+
+

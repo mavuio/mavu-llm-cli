@@ -39,7 +39,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.2.1"
+	version                = "0.2.2"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -1146,8 +1146,7 @@ func writeSessionTasks(rootDir, templateRoot string, autostartNames, ondemandNam
 			return err
 		}
 
-		_, isAutostart := autostartSet[sessionName]
-		task := buildVSCodeTask(sessionName, session, isAutostart)
+		task := buildVSCodeTask(sessionName, session)
 		tasks = append(tasks, task)
 	}
 
@@ -1172,9 +1171,6 @@ func writeSessionTasks(rootDir, templateRoot string, autostartNames, ondemandNam
 				"label":          "__ Start Default Terminal Sessions",
 				"dependsOn":      autostartLabels,
 				"problemMatcher": []any{},
-				"runOptions": map[string]any{
-					"runOn": "folderOpen",
-				},
 			}
 			tasks = append(tasks, compoundTask)
 		}
@@ -1213,7 +1209,7 @@ func loadSessionTemplate(path string) (SessionTemplate, error) {
 	return session, nil
 }
 
-func buildVSCodeTask(id string, session SessionTemplate, isAutostart bool) map[string]any {
+func buildVSCodeTask(id string, session SessionTemplate) map[string]any {
 	label := session.Name
 	if label == "" {
 		label = id
