@@ -1,6 +1,10 @@
+BINARY := mavu-llm
 TEST_PACKAGES := ./...
 
-.PHONY: test
+.PHONY: build test
+
+build:
+	go build -o $(BINARY) .
 
 test:
 	go test $(TEST_PACKAGES)
