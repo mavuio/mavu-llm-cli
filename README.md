@@ -32,8 +32,8 @@ mavu-llm update [--path <dir>]
 mavu-llm template-paths
 ```
 
-When a project type defines `mcps`, mavu-llm writes `opencode.json` and `.mcp.json`
-into the target directory using the MCP templates.
+When a project type defines `mcps`, mavu-llm writes `opencode.json`, `.mcp.json`, and
+`.codex/config.toml` into the target directory using the MCP templates.
 
 ## Local Project Configuration
 
@@ -82,7 +82,8 @@ Create project-specific MCP configurations in `.mavu/mcp.json`.
 - Local MCPs take precedence over global MCP templates
 - Supports environment variable expansion: `${VAR_NAME}`
 - Merged with global MCPs defined in project config
-- Written to both `.mcp.json` (Claude Desktop) and `opencode.json` (OpenCode)
+- Written to `.mcp.json` (Claude Desktop), `opencode.json` (OpenCode), and `.codex/config.toml` (Codex)
+- Note: Codex only loads `.codex/config.toml` for trusted projects (configured in `~/.codex/config.toml`).
 
 ## Templates
 

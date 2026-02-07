@@ -1,0 +1,3 @@
+[mcp_servers.tidewave]
+enabled = true
+url = "http://localhost:${PHX_PORT}/tidewave/mcp"

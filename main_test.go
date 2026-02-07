@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestLoadProjectTypesFromEnvRoot(t *testing.T) {
@@ -41,6 +43,7 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 	assertFileExists(t, filepath.Join(rootDir, opencodeConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, mcpConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, ".codex", agentsFilename))
+	assertFileExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
 	assertFileExists(t, filepath.Join(rootDir, ".claude", claudeFilename))
 	assertDirExists(t, filepath.Join(rootDir, ".codex", "skills", "beans"))
 	assertDirExists(t, filepath.Join(rootDir, ".claude", "skills", "beans"))
@@ -173,10 +176,26 @@ mcps = ["demo"]
 	if _, ok := mcpCfg.McpServers["demo"]; !ok {
 		t.Fatalf("expected demo in mcp config")
 	}
-	if _, ok := mcpCfg.McpServers["tidewave"]; !ok {
-		t.Fatalf("expected tidewave in mcp config")
+		if _, ok := mcpCfg.McpServers["tidewave"]; !ok {
+			t.Fatalf("expected tidewave in mcp config")
+		}
+
+		var codexCfg map[string]any
+		loadTOML(t, filepath.Join(rootDir, ".codex", "config.toml"), &codexCfg)
+		mcpServers, ok := codexCfg["mcp_servers"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected mcp_servers table in codex config")
+		}
+		if len(mcpServers) != 2 {
+			t.Fatalf("expected 2 mcp servers in codex config, got %d", len(mcpServers))
+		}
+		if _, ok := mcpServers["demo"]; !ok {
+			t.Fatalf("expected demo in codex config")
+		}
+		if _, ok := mcpServers["tidewave"]; !ok {
+			t.Fatalf("expected tidewave in codex config")
+		}
 	}
-}
 
 func TestCommandCopyLayout(t *testing.T) {
 	templatesDir := createTemplateRoot(t)
@@ -303,6 +322,17 @@ func loadJSON(t *testing.T, path string, target any) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	if err := json.Unmarshal(data, target); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+}
+
+func loadTOML(t *testing.T, path string, target any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if err := toml.Unmarshal(data, target); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
 }

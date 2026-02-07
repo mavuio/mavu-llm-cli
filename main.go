@@ -39,7 +39,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.2.2"
+	version                = "0.2.3"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -332,6 +332,9 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 			return err
 		}
 		if err := writeMcpConfig(rootDir, mcpEntries); err != nil {
+			return err
+		}
+		if err := writeCodexMcpConfig(rootDir, mcpEntries); err != nil {
 			return err
 		}
 	}
@@ -1322,6 +1325,202 @@ func writeMcpConfig(rootDir string, mcpEntries map[string]any) error {
 	}
 	payload = append(payload, '\n')
 	return writeFile(path, payload)
+}
+
+func writeCodexMcpConfig(rootDir string, mcpEntries map[string]any) error {
+	path := filepath.Join(rootDir, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), defaultDirPermission); err != nil {
+		return err
+	}
+
+	cfg := make(map[string]any)
+	if data, err := os.ReadFile(path); err == nil {
+		if err := toml.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	mcpServers, _ := cfg["mcp_servers"].(map[string]any)
+	if mcpServers == nil {
+		mcpServers = make(map[string]any)
+	}
+
+	for name, value := range mcpEntries {
+		serverMap, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		codexServer := codexMcpServerFromEntry(serverMap)
+		if codexServer == nil {
+			continue
+		}
+		mcpServers[name] = codexServer
+	}
+	cfg["mcp_servers"] = mcpServers
+
+	payload, err := toml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if len(payload) == 0 || payload[len(payload)-1] != '\n' {
+		payload = append(payload, '\n')
+	}
+	return writeFile(path, payload)
+}
+
+func codexMcpServerFromEntry(entry map[string]any) map[string]any {
+	typ := strings.TrimSpace(strings.ToLower(toString(entry["type"])))
+	if typ == "" {
+		// Best-effort inference
+		if entry["command"] != nil {
+			typ = "stdio"
+		} else if entry["url"] != nil {
+			typ = "http"
+		}
+	}
+	if typ == "remote" {
+		typ = "http"
+	}
+
+	out := make(map[string]any)
+	if enabled, ok := entry["enabled"].(bool); ok {
+		out["enabled"] = enabled
+	}
+
+	switch typ {
+	case "http":
+		url := strings.TrimSpace(toString(entry["url"]))
+		if url == "" {
+			return nil
+		}
+		out["url"] = url
+
+		if bearer := strings.TrimSpace(toString(entry["bearer_token_env_var"])); bearer != "" {
+			out["bearer_token_env_var"] = bearer
+		}
+
+		headers := toStringMap(entry["headers"])
+		if len(headers) > 0 {
+			httpHeaders := make(map[string]any)
+			envHeaders := make(map[string]any)
+			for k, v := range headers {
+				if envKey, ok := singleEnvVar(v); ok {
+					envHeaders[k] = envKey
+				} else {
+					httpHeaders[k] = v
+				}
+			}
+			if len(httpHeaders) > 0 {
+				out["http_headers"] = httpHeaders
+			}
+			if len(envHeaders) > 0 {
+				out["env_http_headers"] = envHeaders
+			}
+		}
+		return out
+	case "stdio":
+		command := strings.TrimSpace(toString(entry["command"]))
+		if command == "" {
+			return nil
+		}
+		out["command"] = command
+		if args := toStringSlice(entry["args"]); len(args) > 0 {
+			out["args"] = args
+		}
+		if env := toStringMap(entry["env"]); len(env) > 0 {
+			envTable := make(map[string]any, len(env))
+			for k, v := range env {
+				envTable[k] = v
+			}
+			out["env"] = envTable
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func toString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case fmt.Stringer:
+		return t.String()
+	default:
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprint(v)
+	}
+}
+
+func toStringSlice(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			s := strings.TrimSpace(toString(item))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func toStringMap(v any) map[string]string {
+	switch t := v.(type) {
+	case map[string]string:
+		return t
+	case map[string]any:
+		out := make(map[string]string, len(t))
+		for k, vv := range t {
+			s := strings.TrimSpace(toString(vv))
+			if s == "" {
+				continue
+			}
+			out[k] = s
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func singleEnvVar(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+		key := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "${"), "}"))
+		if key != "" && isEnvKey(key) {
+			return key, true
+		}
+	}
+	if strings.HasPrefix(value, "$") {
+		key := strings.TrimSpace(strings.TrimPrefix(value, "$"))
+		if key != "" && isEnvKey(key) {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+func isEnvKey(key string) bool {
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func writeRootDocs(rootDir, templateRoot string, codexConfig, claudeConfig ResolvedToolConfig) error {
