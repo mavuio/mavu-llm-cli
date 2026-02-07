@@ -2,11 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(go test:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "Bash(./mavu-llm template-paths:*)",
+      "Bash(./mavu-llm update:*)",
+      "Bash(./mavu-llm version:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "tidewave"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }
