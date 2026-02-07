@@ -39,7 +39,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.2.3"
+	version                = "0.2.4"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -335,6 +335,9 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 			return err
 		}
 		if err := writeCodexMcpConfig(rootDir, mcpEntries); err != nil {
+			return err
+		}
+		if err := ensureCodexProjectTrusted(rootDir); err != nil {
 			return err
 		}
 	}
@@ -1367,6 +1370,59 @@ func writeCodexMcpConfig(rootDir string, mcpEntries map[string]any) error {
 	if len(payload) == 0 || payload[len(payload)-1] != '\n' {
 		payload = append(payload, '\n')
 	}
+	return writeFile(path, payload)
+}
+
+func ensureCodexProjectTrusted(rootDir string) error {
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		return err
+	}
+
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
+	path := filepath.Join(codexHome, "config.toml")
+
+	if err := os.MkdirAll(codexHome, defaultDirPermission); err != nil {
+		return err
+	}
+
+	cfg := make(map[string]any)
+	if data, err := os.ReadFile(path); err == nil {
+		if err := toml.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	projects, _ := cfg["projects"].(map[string]any)
+	if projects == nil {
+		projects = make(map[string]any)
+	}
+
+	if proj, ok := projects[absRoot].(map[string]any); ok && proj["trust_level"] == "trusted" {
+		return nil // already trusted
+	}
+
+	projects[absRoot] = map[string]any{"trust_level": "trusted"}
+	cfg["projects"] = projects
+
+	payload, err := toml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if len(payload) == 0 || payload[len(payload)-1] != '\n' {
+		payload = append(payload, '\n')
+	}
+
+	fmt.Printf("Marked project as trusted in %s\n", path)
 	return writeFile(path, payload)
 }
 
