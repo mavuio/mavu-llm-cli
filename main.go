@@ -41,7 +41,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.2.5"
+	version                = "0.2.6"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -137,15 +137,16 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("mavu-llm - manage LLM setup templates")
+	name := binaryName()
+	fmt.Printf("%s - manage LLM setup templates\n", name)
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  mavu-llm types")
-	fmt.Println("  mavu-llm init --type <project-type> [--path <dir>] [--verbose]")
-	fmt.Println("  mavu-llm update [--path <dir>] [--verbose]")
-	fmt.Println("  mavu-llm template-paths")
-	fmt.Println("  mavu-llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]")
-	fmt.Println("  mavu-llm version")
+	fmt.Printf("  %s types\n", name)
+	fmt.Printf("  %s init --type <project-type> [--path <dir>] [--verbose]\n", name)
+	fmt.Printf("  %s update [--path <dir>] [--verbose]\n", name)
+	fmt.Printf("  %s template-paths\n", name)
+	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]\n", name)
+	fmt.Printf("  %s version\n", name)
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  types           List available project types")
@@ -162,7 +163,18 @@ func printUsage() {
 }
 
 func printVersion() {
-	fmt.Printf("mavu-llm %s\n", version)
+	fmt.Printf("%s %s\n", binaryName(), version)
+}
+
+func binaryName() string {
+	if len(os.Args) == 0 {
+		return "llm"
+	}
+	name := strings.TrimSpace(filepath.Base(os.Args[0]))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "llm"
+	}
+	return name
 }
 
 func listProjectTypes() error {
@@ -480,8 +492,23 @@ func formatProjectLabel(name, projectPath string) string {
 	if trimmedPath == "" {
 		return name
 	}
-	target := url.URL{Scheme: "file", Path: trimmedPath}
-	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", target.String(), name)
+	target := projectLinkURL(trimmedPath)
+	if target == "" {
+		return name
+	}
+	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", target, name)
+}
+
+func projectLinkURL(projectPath string) string {
+	trimmedPath := strings.TrimSpace(projectPath)
+	if trimmedPath == "" {
+		return ""
+	}
+	escapedPath := (&url.URL{Path: trimmedPath}).EscapedPath()
+	if escapedPath == "" {
+		return ""
+	}
+	return "cursor://file" + escapedPath
 }
 
 func supportsTerminalHyperlinks() bool {

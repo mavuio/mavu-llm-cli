@@ -1,39 +1,39 @@
 # mavu-llm-cli
 
-mavu-llm manages LLM setup files for a project (skills + agent docs).
+llm manages LLM setup files for a project (skills + agent docs).
 
 ## Install
 
 Build the binary first:
 
 ```bash
-go build -o mavu-llm
+go build -o llm
 ```
 
 Option A: user-local symlink
 
 ```bash
 mkdir -p ~/.local/bin
-ln -sf /Users/manfred/Documents/www/mavu-llm-cli/mavu-llm ~/.local/bin/mavu-llm
+ln -sf /Users/manfred/Documents/www/mavu-llm-cli/llm ~/.local/bin/llm
 ```
 
 Option B: Homebrew bin (system-wide)
 
 ```bash
-ln -sf /Users/manfred/Documents/www/mavu-llm-cli/mavu-llm /opt/homebrew/bin/mavu-llm
+ln -sf /Users/manfred/Documents/www/mavu-llm-cli/llm /opt/homebrew/bin/llm
 ```
 
 ## Usage
 
 ```bash
-mavu-llm types
-mavu-llm init --type <project-type> [--path <dir>]
-mavu-llm update [--path <dir>]
-mavu-llm template-paths
-mavu-llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]
+llm types
+llm init --type <project-type> [--path <dir>]
+llm update [--path <dir>]
+llm template-paths
+llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]
 ```
 
-When a project type defines `mcps`, mavu-llm writes `opencode.json`, `.mcp.json`, and
+When a project type defines `mcps`, llm writes `opencode.json`, `.mcp.json`, and
 `.codex/config.toml` into the target directory using the MCP templates.
 
 ## Local Project Configuration
@@ -88,7 +88,7 @@ Create project-specific MCP configurations in `.mavu/mcp.json`.
 
 ## Templates
 
-mavu-llm loads templates from disk (nothing is embedded). Set
+llm loads templates from disk (nothing is embedded). Set
 `MAVU_LLM_TEMPLATES_DIR` to a directory that contains:
 
 - `project_types/*.toml`
@@ -97,5 +97,5 @@ mavu-llm loads templates from disk (nothing is embedded). Set
 - `command_templates/<command>.md`
 - `mcp_templates/<mcp>.mcp.json`
 
-If the env var is not set, mavu-llm searches the current working directory
-and the directory containing the `mavu-llm` binary for `project_types/`.
+If the env var is not set, llm searches the current working directory
+and the directory containing the `llm` binary for `project_types/`.

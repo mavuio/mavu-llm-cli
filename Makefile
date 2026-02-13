@@ -1,4 +1,4 @@
-BINARY := mavu-llm
+BINARY := llm
 TEST_PACKAGES := ./...
 
 .PHONY: build test

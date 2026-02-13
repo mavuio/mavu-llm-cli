@@ -26,7 +26,7 @@ Use this skill to ship `mavu-llm-cli` changes safely.
    ```bash
    gofmt -w main.go main_test.go
    go test ./...
-   go build -o mavu-llm .
+   go build -o llm .
    ```
 
 5. Stage only relevant source/docs changes (never stage the built binary):
