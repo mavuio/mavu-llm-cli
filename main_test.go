@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -176,26 +177,26 @@ mcps = ["demo"]
 	if _, ok := mcpCfg.McpServers["demo"]; !ok {
 		t.Fatalf("expected demo in mcp config")
 	}
-		if _, ok := mcpCfg.McpServers["tidewave"]; !ok {
-			t.Fatalf("expected tidewave in mcp config")
-		}
-
-		var codexCfg map[string]any
-		loadTOML(t, filepath.Join(rootDir, ".codex", "config.toml"), &codexCfg)
-		mcpServers, ok := codexCfg["mcp_servers"].(map[string]any)
-		if !ok {
-			t.Fatalf("expected mcp_servers table in codex config")
-		}
-		if len(mcpServers) != 2 {
-			t.Fatalf("expected 2 mcp servers in codex config, got %d", len(mcpServers))
-		}
-		if _, ok := mcpServers["demo"]; !ok {
-			t.Fatalf("expected demo in codex config")
-		}
-		if _, ok := mcpServers["tidewave"]; !ok {
-			t.Fatalf("expected tidewave in codex config")
-		}
+	if _, ok := mcpCfg.McpServers["tidewave"]; !ok {
+		t.Fatalf("expected tidewave in mcp config")
 	}
+
+	var codexCfg map[string]any
+	loadTOML(t, filepath.Join(rootDir, ".codex", "config.toml"), &codexCfg)
+	mcpServers, ok := codexCfg["mcp_servers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcp_servers table in codex config")
+	}
+	if len(mcpServers) != 2 {
+		t.Fatalf("expected 2 mcp servers in codex config, got %d", len(mcpServers))
+	}
+	if _, ok := mcpServers["demo"]; !ok {
+		t.Fatalf("expected demo in codex config")
+	}
+	if _, ok := mcpServers["tidewave"]; !ok {
+		t.Fatalf("expected tidewave in codex config")
+	}
+}
 
 func TestCommandCopyLayout(t *testing.T) {
 	templatesDir := createTemplateRoot(t)
@@ -267,6 +268,327 @@ func TestExpandEnvVarsReportsMissing(t *testing.T) {
 	}
 }
 
+func TestSessionProjectNameMatchesDirectChild(t *testing.T) {
+	name, ok := sessionProjectName("/www/chatty", []string{"/www"})
+	if !ok {
+		t.Fatal("expected project name to be detected")
+	}
+	if name != "chatty" {
+		t.Fatalf("expected chatty, got %s", name)
+	}
+}
+
+func TestSessionProjectNameRejectsNestedDirectories(t *testing.T) {
+	if _, ok := sessionProjectName("/www/chatty/subdir", []string{"/www"}); ok {
+		t.Fatal("expected nested directory to be ignored")
+	}
+}
+
+func TestSessionProjectNameSupportsResolvedRootCandidate(t *testing.T) {
+	rootCandidates := []string{"/www", "/Users/manfred/Documents/www"}
+	name, ok := sessionProjectName("/Users/manfred/Documents/www/wah-ex", rootCandidates)
+	if !ok {
+		t.Fatal("expected project name to be detected using resolved root")
+	}
+	if name != "wah-ex" {
+		t.Fatalf("expected wah-ex, got %s", name)
+	}
+}
+
+func TestFormatSessionUpdatedAtShowsTimeForToday(t *testing.T) {
+	now := time.Date(2026, time.February, 13, 10, 30, 0, 0, time.UTC)
+	updated := time.Date(2026, time.February, 13, 8, 45, 0, 0, time.UTC).UnixMilli()
+
+	formatted := formatSessionUpdatedAt(updated, now)
+	if formatted != "08:45" {
+		t.Fatalf("expected time-only format for today, got %q", formatted)
+	}
+}
+
+func TestFormatSessionUpdatedAtShowsDateForOlderSessions(t *testing.T) {
+	now := time.Date(2026, time.February, 13, 10, 30, 0, 0, time.UTC)
+	updated := time.Date(2026, time.February, 12, 22, 15, 0, 0, time.UTC).UnixMilli()
+
+	formatted := formatSessionUpdatedAt(updated, now)
+	if formatted != "2026-02-12" {
+		t.Fatalf("expected date-only format for older sessions, got %q", formatted)
+	}
+}
+
+func TestFindOpenCodeSessionsReadsStorageAndExcludesPrefix(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	chattyDir := filepath.Join(rootDir, "chatty")
+	archiveDir := filepath.Join(rootDir, "archive-old")
+	outsideDir := filepath.Join(t.TempDir(), "outside")
+
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, archiveDir)
+	mustMkdirAll(t, outsideDir)
+	mustMkdirAll(t, filepath.Join(storageDir, "project"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-archive"))
+
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
+		"id":       "proj-chatty",
+		"worktree": chattyDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-archive.json"), map[string]any{
+		"id":       "proj-archive",
+		"worktree": archiveDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-outside.json"), map[string]any{
+		"id":       "proj-outside",
+		"worktree": outsideDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-missing.json"), map[string]any{
+		"id":       "proj-missing",
+		"worktree": filepath.Join(rootDir, "missing-project"),
+	})
+
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-new.json"), map[string]any{
+		"id":    "ses-new",
+		"title": "Newest Chatty Session",
+		"time": map[string]any{
+			"updated": int64(200),
+		},
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-old.json"), map[string]any{
+		"id":    "ses-old",
+		"title": "",
+		"time": map[string]any{
+			"updated": int64(100),
+		},
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-archive-title.json"), map[string]any{
+		"id":    "ses-archive-title",
+		"title": "archive hidden session",
+		"time": map[string]any{
+			"updated": int64(250),
+		},
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-explore.json"), map[string]any{
+		"id":    "ses-explore",
+		"title": "Inspect map API (@explore subagent)",
+		"time": map[string]any{
+			"updated": int64(240),
+		},
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-archive", "ses-archive.json"), map[string]any{
+		"id":    "ses-archive",
+		"title": "Archive Session",
+		"time": map[string]any{
+			"updated": int64(300),
+		},
+	})
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-missing"))
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-missing", "ses-missing.json"), map[string]any{
+		"id":    "ses-missing",
+		"title": "Missing Project Session",
+		"time": map[string]any{
+			"updated": int64(400),
+		},
+	})
+
+	sessions, err := findOpenCodeSessions(rootDir, "archive", storageDir)
+	if err != nil {
+		t.Fatalf("find sessions: %v", err)
+	}
+
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	if sessions[0].ID != "ses-new" {
+		t.Fatalf("expected first session ses-new, got %s", sessions[0].ID)
+	}
+	if sessions[1].ID != "ses-old" {
+		t.Fatalf("expected second session ses-old, got %s", sessions[1].ID)
+	}
+	if sessions[0].Project != "chatty" {
+		t.Fatalf("expected project chatty, got %s", sessions[0].Project)
+	}
+}
+
+func TestFindOpenCodeSessionsUsesSessionDirectoryWhenPresent(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	chattyDir := filepath.Join(rootDir, "chatty")
+	archiveDir := filepath.Join(rootDir, "archive-old")
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, archiveDir)
+	mustMkdirAll(t, filepath.Join(storageDir, "project"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-shared"))
+
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-shared.json"), map[string]any{
+		"id":       "proj-shared",
+		"worktree": archiveDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-shared", "ses-1.json"), map[string]any{
+		"id":        "ses-1",
+		"title":     "Session from sandbox directory",
+		"directory": chattyDir,
+		"time": map[string]any{
+			"updated": int64(50),
+		},
+	})
+
+	sessions, err := findOpenCodeSessions(rootDir, "archive", storageDir)
+	if err != nil {
+		t.Fatalf("find sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Project != "chatty" {
+		t.Fatalf("expected project chatty, got %s", sessions[0].Project)
+	}
+}
+
+func TestWorktreeExistsFalseForMissingPath(t *testing.T) {
+	if worktreeExists(filepath.Join(t.TempDir(), "does-not-exist")) {
+		t.Fatal("expected missing path to be false")
+	}
+}
+
+func TestListOpenCodeSessionsPrintsSessionTitles(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	chattyDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, filepath.Join(storageDir, "project"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
+
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
+		"id":       "proj-chatty",
+		"worktree": chattyDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-1.json"), map[string]any{
+		"id":    "ses-1",
+		"title": "Chatty Session One",
+		"time": map[string]any{
+			"updated": int64(1739443560000),
+		},
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-explore.json"), map[string]any{
+		"id":    "ses-explore",
+		"title": "Debug route (@explore subagent)",
+		"time": map[string]any{
+			"updated": int64(1739443561000),
+		},
+	})
+
+	var runErr error
+	output := captureOutput(t, func() {
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir})
+	})
+	if runErr != nil {
+		t.Fatalf("list opencode sessions: %v", runErr)
+	}
+
+	if !strings.Contains(output, "chatty") {
+		t.Fatalf("expected output to include project name, got %q", output)
+	}
+	if !strings.Contains(output, "Chatty Session One") {
+		t.Fatalf("expected output to include session title, got %q", output)
+	}
+	expectedTime := formatSessionUpdated(1739443560000)
+	if !strings.Contains(output, expectedTime) {
+		t.Fatalf("expected output to include session timestamp %q, got %q", expectedTime, output)
+	}
+	if strings.Contains(output, "UTC") {
+		t.Fatalf("expected output to omit UTC marker, got %q", output)
+	}
+	if strings.Contains(output, "(@explore subagent)") {
+		t.Fatalf("expected output to omit explore-subagent titles, got %q", output)
+	}
+	if strings.Contains(output, chattyDir) {
+		t.Fatalf("expected output not to include directory path, got %q", output)
+	}
+}
+
+func TestListOpenCodeSessionsAppliesLineFilter(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	filmDir := filepath.Join(rootDir, "filmarchiv-ex")
+	chattyDir := filepath.Join(rootDir, "chatty")
+	orfDir := filepath.Join(rootDir, "orfaudio")
+	mustMkdirAll(t, filmDir)
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, orfDir)
+	mustMkdirAll(t, filepath.Join(storageDir, "project"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-film"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-orf"))
+
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-film.json"), map[string]any{
+		"id":       "proj-film",
+		"worktree": filmDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
+		"id":       "proj-chatty",
+		"worktree": chattyDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-orf.json"), map[string]any{
+		"id":       "proj-orf",
+		"worktree": orfDir,
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-film", "ses-film.json"), map[string]any{
+		"id":    "ses-film",
+		"title": "Map issue",
+		"time": map[string]any{
+			"updated": int64(100),
+		},
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-chatty.json"), map[string]any{
+		"id":    "ses-chatty",
+		"title": "General chat",
+		"time": map[string]any{
+			"updated": int64(90),
+		},
+	})
+	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-orf", "ses-orf.json"), map[string]any{
+		"id":    "ses-orf",
+		"title": "Managing orfaudio/filmarchiv-ex container instances",
+		"time": map[string]any{
+			"updated": int64(80),
+		},
+	})
+
+	var runErr error
+	output := captureOutput(t, func() {
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "filmarchiv-ex:"})
+	})
+	if runErr != nil {
+		t.Fatalf("list opencode sessions: %v", runErr)
+	}
+
+	if !strings.Contains(output, "filmarchiv-ex") {
+		t.Fatalf("expected output to include filtered project line, got %q", output)
+	}
+	if strings.Contains(output, "chatty") {
+		t.Fatalf("expected output to exclude non-matching line, got %q", output)
+	}
+	if strings.Contains(output, "orfaudio") {
+		t.Fatalf("expected output to exclude title-only substring matches, got %q", output)
+	}
+}
+
+func TestShouldSkipSessionTitle(t *testing.T) {
+	if !shouldSkipSessionTitle("archive step 1", "archive") {
+		t.Fatal("expected archive-prefixed title to be skipped")
+	}
+	if !shouldSkipSessionTitle("Inspect map (@explore subagent)", "archive") {
+		t.Fatal("expected explore-subagent title to be skipped")
+	}
+	if shouldSkipSessionTitle("Regular session title", "archive") {
+		t.Fatal("expected normal title not to be skipped")
+	}
+}
+
 func captureOutput(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stdout
@@ -302,6 +624,24 @@ func createTemplateRoot(t *testing.T) string {
 		}
 	}
 	return root
+}
+
+func mustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+}
+
+func writeJSONFile(t *testing.T, path string, payload any) {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 func writeTemplateFile(t *testing.T, root, relPath, content string) {

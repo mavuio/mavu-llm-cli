@@ -7,12 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -39,7 +41,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.2.4"
+	version                = "0.2.5"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -119,6 +121,10 @@ func main() {
 		if err := listTemplatePaths(); err != nil {
 			exitWithError(err)
 		}
+	case "opencode-sessions", "os":
+		if err := listOpenCodeSessions(os.Args[2:]); err != nil {
+			exitWithError(err)
+		}
 	case "version", "--version", "-v":
 		printVersion()
 	case "help", "--help", "-h":
@@ -138,6 +144,7 @@ func printUsage() {
 	fmt.Println("  mavu-llm init --type <project-type> [--path <dir>] [--verbose]")
 	fmt.Println("  mavu-llm update [--path <dir>] [--verbose]")
 	fmt.Println("  mavu-llm template-paths")
+	fmt.Println("  mavu-llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]")
 	fmt.Println("  mavu-llm version")
 	fmt.Println()
 	fmt.Println("Commands:")
@@ -145,6 +152,7 @@ func printUsage() {
 	fmt.Println("  init            Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
 	fmt.Println("  update          Re-run setup using stored project type")
 	fmt.Println("  template-paths  Show template search paths")
+	fmt.Println("  opencode-sessions (os)  List OpenCode session titles in /www/* (excluding archive* projects), optional line filter")
 	fmt.Println("  version         Show current version")
 	fmt.Println()
 	fmt.Println("Notes:")
@@ -219,6 +227,338 @@ func listTemplatePaths() error {
 		fmt.Printf("    session_templates: %s\n", filepath.Join(root, sessionTemplatesDir))
 	}
 	return nil
+}
+
+func listOpenCodeSessions(args []string) error {
+	flags := flag.NewFlagSet("opencode-sessions", flag.ContinueOnError)
+	flags.SetOutput(os.Stdout)
+	pathFlag := flags.String("path", "/www", "Directory containing project folders")
+	excludePrefixFlag := flags.String("exclude-prefix", "archive", "Ignore projects and session titles with this prefix")
+	storagePathFlag := flags.String("storage-path", defaultOpenCodeStoragePath(), "OpenCode storage directory")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	rootDir := strings.TrimSpace(*pathFlag)
+	if rootDir == "" {
+		return errors.New("path cannot be empty")
+	}
+	excludePrefix := strings.TrimSpace(*excludePrefixFlag)
+	storagePath := strings.TrimSpace(*storagePathFlag)
+	if storagePath == "" {
+		return errors.New("storage-path cannot be empty")
+	}
+	outputFilter := strings.ToLower(strings.TrimSpace(strings.Join(flags.Args(), " ")))
+
+	sessions, err := findOpenCodeSessions(rootDir, excludePrefix, storagePath)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	printed := 0
+
+	if len(sessions) == 0 {
+		if excludePrefix == "" {
+			fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
+			return nil
+		}
+		fmt.Printf("No OpenCode sessions found in %s/* excluding %s*\n", rootDir, excludePrefix)
+		return nil
+	}
+
+	if excludePrefix == "" {
+		fmt.Printf("OpenCode sessions in %s/*:\n", rootDir)
+	} else {
+		fmt.Printf("OpenCode sessions in %s/* excluding %s*:\n", rootDir, excludePrefix)
+	}
+	for _, session := range sessions {
+		title := strings.TrimSpace(session.Title)
+		if title == "" {
+			title = session.ID
+		}
+		formattedTime := formatSessionUpdatedAt(session.Time.Updated, now)
+		line := fmt.Sprintf("%s: | %s | %s", session.Project, formattedTime, title)
+		if outputFilter != "" && !strings.Contains(strings.ToLower(line), outputFilter) {
+			continue
+		}
+		projectLabel := formatProjectLabel(session.Project, session.ProjectPath)
+		fmt.Printf("  %s: | %s | %s\n", projectLabel, formattedTime, title)
+		printed++
+	}
+
+	if printed == 0 {
+		if outputFilter == "" {
+			if excludePrefix == "" {
+				fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
+			} else {
+				fmt.Printf("No OpenCode sessions found in %s/* excluding %s*\n", rootDir, excludePrefix)
+			}
+			return nil
+		}
+		if excludePrefix == "" {
+			fmt.Printf("No OpenCode sessions found in %s/* matching %q\n", rootDir, outputFilter)
+		} else {
+			fmt.Printf("No OpenCode sessions found in %s/* excluding %s* matching %q\n", rootDir, excludePrefix, outputFilter)
+		}
+	}
+	return nil
+}
+
+type openCodeSession struct {
+	ID          string
+	Title       string
+	Project     string
+	ProjectPath string
+	Time        struct {
+		Updated int64 `json:"updated"`
+	} `json:"time"`
+}
+
+type openCodeSessionFile struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Directory string `json:"directory"`
+	Time      struct {
+		Updated int64 `json:"updated"`
+	} `json:"time"`
+}
+
+type openCodeProjectFile struct {
+	ID       string `json:"id"`
+	Worktree string `json:"worktree"`
+}
+
+func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCodeSession, error) {
+	projectStorageDir := filepath.Join(storagePath, "project")
+	sessionStorageDir := filepath.Join(storagePath, "session")
+
+	projectEntries, err := os.ReadDir(projectStorageDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	candidates, err := rootCandidates(rootDir)
+	if err != nil {
+		return nil, err
+	}
+	prefix := strings.ToLower(strings.TrimSpace(excludePrefix))
+
+	var filtered []openCodeSession
+	for _, projectEntry := range projectEntries {
+		if projectEntry.IsDir() || filepath.Ext(projectEntry.Name()) != ".json" {
+			continue
+		}
+
+		projectPath := filepath.Join(projectStorageDir, projectEntry.Name())
+		data, err := os.ReadFile(projectPath)
+		if err != nil {
+			return nil, err
+		}
+		var project openCodeProjectFile
+		if err := json.Unmarshal(data, &project); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", projectPath, err)
+		}
+
+		sessionsDir := filepath.Join(sessionStorageDir, project.ID)
+		sessionEntries, err := os.ReadDir(sessionsDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		for _, sessionEntry := range sessionEntries {
+			if sessionEntry.IsDir() || filepath.Ext(sessionEntry.Name()) != ".json" {
+				continue
+			}
+
+			sessionPath := filepath.Join(sessionsDir, sessionEntry.Name())
+			sessionData, err := os.ReadFile(sessionPath)
+			if err != nil {
+				return nil, err
+			}
+			var sessionFile openCodeSessionFile
+			if err := json.Unmarshal(sessionData, &sessionFile); err != nil {
+				return nil, fmt.Errorf("parse %s: %w", sessionPath, err)
+			}
+
+			sessionRoot := strings.TrimSpace(sessionFile.Directory)
+			if sessionRoot == "" {
+				sessionRoot = project.Worktree
+			}
+			projectName, ok := sessionProjectName(sessionRoot, candidates)
+			if !ok {
+				continue
+			}
+			if !worktreeExists(sessionRoot) {
+				continue
+			}
+			title := strings.TrimSpace(sessionFile.Title)
+			if shouldSkipSessionTitle(title, prefix) {
+				continue
+			}
+			if prefix != "" && strings.HasPrefix(strings.ToLower(projectName), prefix) {
+				continue
+			}
+
+			filtered = append(filtered, openCodeSession{
+				ID:          sessionFile.ID,
+				Title:       sessionFile.Title,
+				Project:     projectName,
+				ProjectPath: absolutePath(sessionRoot),
+				Time:        sessionFile.Time,
+			})
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Time.Updated == filtered[j].Time.Updated {
+			left := strings.TrimSpace(filtered[i].Title)
+			if left == "" {
+				left = filtered[i].ID
+			}
+			right := strings.TrimSpace(filtered[j].Title)
+			if right == "" {
+				right = filtered[j].ID
+			}
+			return left < right
+		}
+		return filtered[i].Time.Updated > filtered[j].Time.Updated
+	})
+	return filtered, nil
+}
+
+func formatSessionUpdated(updatedMillis int64) string {
+	return formatSessionUpdatedAt(updatedMillis, time.Now())
+}
+
+func formatSessionUpdatedAt(updatedMillis int64, now time.Time) string {
+	if updatedMillis <= 0 {
+		return "unknown"
+	}
+	updated := time.UnixMilli(updatedMillis).In(now.Location())
+	yearNow, monthNow, dayNow := now.Date()
+	yearUpdated, monthUpdated, dayUpdated := updated.Date()
+	if yearNow == yearUpdated && monthNow == monthUpdated && dayNow == dayUpdated {
+		return updated.Format("15:04")
+	}
+	return updated.Format("2006-01-02")
+}
+
+func worktreeExists(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return false
+	}
+	info, err := os.Stat(trimmed)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func shouldSkipSessionTitle(title, prefix string) bool {
+	lowerTitle := strings.ToLower(strings.TrimSpace(title))
+	if prefix != "" && strings.HasPrefix(lowerTitle, prefix) {
+		return true
+	}
+	if strings.Contains(lowerTitle, "(@explore subagent") {
+		return true
+	}
+	return false
+}
+
+func formatProjectLabel(name, projectPath string) string {
+	if !supportsTerminalHyperlinks() {
+		return name
+	}
+	trimmedPath := strings.TrimSpace(projectPath)
+	if trimmedPath == "" {
+		return name
+	}
+	target := url.URL{Scheme: "file", Path: trimmedPath}
+	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", target.String(), name)
+}
+
+func supportsTerminalHyperlinks() bool {
+	stdoutInfo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	if stdoutInfo.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	term := strings.TrimSpace(strings.ToLower(os.Getenv("TERM")))
+	return term != "" && term != "dumb"
+}
+
+func absolutePath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(trimmed)
+	if err != nil {
+		return filepath.Clean(trimmed)
+	}
+	return filepath.Clean(abs)
+}
+
+func defaultOpenCodeStoragePath() string {
+	if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
+		return filepath.Join(dataHome, "opencode", "storage")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".local", "share", "opencode", "storage")
+	}
+	return filepath.Join(home, ".local", "share", "opencode", "storage")
+}
+
+func rootCandidates(rootDir string) ([]string, error) {
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := []string{filepath.Clean(absRoot)}
+	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
+		resolved = filepath.Clean(resolved)
+		if resolved != candidates[0] {
+			candidates = append(candidates, resolved)
+		}
+	}
+	return candidates, nil
+}
+
+func sessionProjectName(sessionDir string, rootCandidates []string) (string, bool) {
+	dir := filepath.Clean(strings.TrimSpace(sessionDir))
+	if dir == "." || dir == "" {
+		return "", false
+	}
+
+	for _, root := range rootCandidates {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			continue
+		}
+		if rel == "." || rel == "" {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		if strings.Contains(rel, string(os.PathSeparator)) {
+			continue
+		}
+		return rel, true
+	}
+
+	return "", false
 }
 
 func runInit(args []string) error {
@@ -1224,10 +1564,10 @@ func buildVSCodeTask(id string, session SessionTemplate) map[string]any {
 	command := session.Command + "; exec $SHELL"
 
 	task := map[string]any{
-		"label":        label,
-		"type":         "shell",
-		"command":      command,
-		"isBackground": true,
+		"label":          label,
+		"type":           "shell",
+		"command":        command,
+		"isBackground":   true,
 		"problemMatcher": []any{},
 		"options": map[string]any{
 			"shell": map[string]any{

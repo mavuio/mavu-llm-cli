@@ -30,6 +30,7 @@ mavu-llm types
 mavu-llm init --type <project-type> [--path <dir>]
 mavu-llm update [--path <dir>]
 mavu-llm template-paths
+mavu-llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]
 ```
 
 When a project type defines `mcps`, mavu-llm writes `opencode.json`, `.mcp.json`, and
