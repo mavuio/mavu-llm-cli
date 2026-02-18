@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"net/url"
 	"os"
@@ -41,7 +42,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.2.6"
+	version                = "0.2.7"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -145,7 +146,7 @@ func printUsage() {
 	fmt.Printf("  %s init --type <project-type> [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s update [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s template-paths\n", name)
-	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]\n", name)
+	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
 	fmt.Printf("  %s version\n", name)
 	fmt.Println()
 	fmt.Println("Commands:")
@@ -153,7 +154,7 @@ func printUsage() {
 	fmt.Println("  init            Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
 	fmt.Println("  update          Re-run setup using stored project type")
 	fmt.Println("  template-paths  Show template search paths")
-	fmt.Println("  opencode-sessions (os)  List OpenCode session titles in /www/* (excluding archive* projects), optional line filter")
+	fmt.Println("  opencode-sessions (os)  List OpenCode sessions with short IDs, or archive/delete matching sessions")
 	fmt.Println("  version         Show current version")
 	fmt.Println()
 	fmt.Println("Notes:")
@@ -247,6 +248,10 @@ func listOpenCodeSessions(args []string) error {
 	pathFlag := flags.String("path", "/www", "Directory containing project folders")
 	excludePrefixFlag := flags.String("exclude-prefix", "archive", "Ignore projects and session titles with this prefix")
 	storagePathFlag := flags.String("storage-path", defaultOpenCodeStoragePath(), "OpenCode storage directory")
+	archiveFlag := flags.Bool("archive", false, "Archive matching sessions by prefixing title")
+	archivePrefixFlag := flags.String("archive-prefix", "archive", "Prefix used when archiving session titles")
+	deleteFlag := flags.Bool("delete", false, "Delete matching sessions from OpenCode storage")
+	yesFlag := flags.Bool("yes", false, "Skip confirmation prompt for archive/delete")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -260,15 +265,32 @@ func listOpenCodeSessions(args []string) error {
 	if storagePath == "" {
 		return errors.New("storage-path cannot be empty")
 	}
+	archivePrefix := strings.TrimSpace(*archivePrefixFlag)
+	if *archiveFlag && archivePrefix == "" {
+		return errors.New("archive-prefix cannot be empty")
+	}
+	if *archiveFlag && *deleteFlag {
+		return errors.New("--archive and --delete cannot be used together")
+	}
+	mutatingMode := *archiveFlag || *deleteFlag
 	outputFilter := strings.ToLower(strings.TrimSpace(strings.Join(flags.Args(), " ")))
+	if mutatingMode && outputFilter == "" {
+		return errors.New("filter is required when using --archive or --delete")
+	}
 
 	sessions, err := findOpenCodeSessions(rootDir, excludePrefix, storagePath)
 	if err != nil {
 		return err
 	}
+	assignSessionShortIDs(sessions)
 
 	now := time.Now()
-	printed := 0
+	matchedSessions := make([]openCodeSession, 0, len(sessions))
+	for _, session := range sessions {
+		if sessionMatchesFilter(session, now, outputFilter) {
+			matchedSessions = append(matchedSessions, session)
+		}
+	}
 
 	if len(sessions) == 0 {
 		if excludePrefix == "" {
@@ -279,41 +301,82 @@ func listOpenCodeSessions(args []string) error {
 		return nil
 	}
 
-	if excludePrefix == "" {
-		fmt.Printf("OpenCode sessions in %s/*:\n", rootDir)
-	} else {
-		fmt.Printf("OpenCode sessions in %s/* excluding %s*:\n", rootDir, excludePrefix)
-	}
-	for _, session := range sessions {
-		title := strings.TrimSpace(session.Title)
-		if title == "" {
-			title = session.ID
+	if !mutatingMode {
+		if excludePrefix == "" {
+			fmt.Printf("OpenCode sessions in %s/*:\n", rootDir)
+		} else {
+			fmt.Printf("OpenCode sessions in %s/* excluding %s*:\n", rootDir, excludePrefix)
 		}
-		formattedTime := formatSessionUpdatedAt(session.Time.Updated, now)
-		line := fmt.Sprintf("%s: | %s | %s", session.Project, formattedTime, title)
-		if outputFilter != "" && !strings.Contains(strings.ToLower(line), outputFilter) {
-			continue
+		for _, session := range matchedSessions {
+			title := sessionDisplayTitle(session)
+			formattedTime := formatSessionUpdatedAt(session.Time.Updated, now)
+			projectLabel := formatProjectLabel(session.Project, session.ProjectPath)
+			fmt.Printf("  %s: | #%s | %s | %s\n", projectLabel, session.ShortID, formattedTime, title)
 		}
-		projectLabel := formatProjectLabel(session.Project, session.ProjectPath)
-		fmt.Printf("  %s: | %s | %s\n", projectLabel, formattedTime, title)
-		printed++
+
+		if len(matchedSessions) == 0 {
+			if outputFilter == "" {
+				if excludePrefix == "" {
+					fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
+				} else {
+					fmt.Printf("No OpenCode sessions found in %s/* excluding %s*\n", rootDir, excludePrefix)
+				}
+				return nil
+			}
+			if excludePrefix == "" {
+				fmt.Printf("No OpenCode sessions found in %s/* matching %q\n", rootDir, outputFilter)
+			} else {
+				fmt.Printf("No OpenCode sessions found in %s/* excluding %s* matching %q\n", rootDir, excludePrefix, outputFilter)
+			}
+		}
+		return nil
 	}
 
-	if printed == 0 {
-		if outputFilter == "" {
-			if excludePrefix == "" {
-				fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
-			} else {
-				fmt.Printf("No OpenCode sessions found in %s/* excluding %s*\n", rootDir, excludePrefix)
-			}
-			return nil
-		}
+	if len(matchedSessions) == 0 {
 		if excludePrefix == "" {
 			fmt.Printf("No OpenCode sessions found in %s/* matching %q\n", rootDir, outputFilter)
 		} else {
 			fmt.Printf("No OpenCode sessions found in %s/* excluding %s* matching %q\n", rootDir, excludePrefix, outputFilter)
 		}
+		return nil
 	}
+
+	if *archiveFlag {
+		fmt.Printf("Matched %d session(s): %s\n", len(matchedSessions), joinSessionShortIDs(matchedSessions))
+		confirmed, err := confirmSessionMutation("archive", len(matchedSessions), *yesFlag)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+		archivedCount, skippedCount, err := archiveOpenCodeSessions(matchedSessions, archivePrefix)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Archived %d session(s)", archivedCount)
+		if skippedCount > 0 {
+			fmt.Printf(" (skipped %d already archived)", skippedCount)
+		}
+		fmt.Println()
+		return nil
+	}
+
+	fmt.Printf("Matched %d session(s): %s\n", len(matchedSessions), joinSessionShortIDs(matchedSessions))
+	confirmed, err := confirmSessionMutation("delete", len(matchedSessions), *yesFlag)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		fmt.Println("Cancelled.")
+		return nil
+	}
+	deletedCount, err := deleteOpenCodeSessions(matchedSessions)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Deleted %d session(s)\n", deletedCount)
 	return nil
 }
 
@@ -322,6 +385,8 @@ type openCodeSession struct {
 	Title       string
 	Project     string
 	ProjectPath string
+	StoragePath string
+	ShortID     string
 	Time        struct {
 		Updated int64 `json:"updated"`
 	} `json:"time"`
@@ -422,6 +487,7 @@ func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCod
 				Title:       sessionFile.Title,
 				Project:     projectName,
 				ProjectPath: absolutePath(sessionRoot),
+				StoragePath: sessionPath,
 				Time:        sessionFile.Time,
 			})
 		}
@@ -442,6 +508,241 @@ func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCod
 		return filtered[i].Time.Updated > filtered[j].Time.Updated
 	})
 	return filtered, nil
+}
+
+func sessionDisplayTitle(session openCodeSession) string {
+	title := strings.TrimSpace(session.Title)
+	if title == "" {
+		return session.ID
+	}
+	return title
+}
+
+func assignSessionShortIDs(sessions []openCodeSession) {
+	if len(sessions) == 0 {
+		return
+	}
+
+	seeds := make([]string, len(sessions))
+	lengths := make([]int, len(sessions))
+	for i, session := range sessions {
+		seed := sessionShortIDSeed(session)
+		seeds[i] = seed
+		if len(seed) < 4 {
+			lengths[i] = len(seed)
+			if lengths[i] == 0 {
+				lengths[i] = 1
+			}
+			continue
+		}
+		lengths[i] = 4
+	}
+
+	for {
+		groups := make(map[string][]int)
+		for i, seed := range seeds {
+			prefixLen := lengths[i]
+			if prefixLen > len(seed) {
+				prefixLen = len(seed)
+			}
+			groups[seed[:prefixLen]] = append(groups[seed[:prefixLen]], i)
+		}
+
+		progressed := false
+		unresolved := false
+		for _, indexes := range groups {
+			if len(indexes) <= 1 {
+				continue
+			}
+			unresolved = true
+			for _, idx := range indexes {
+				if lengths[idx] < len(seeds[idx]) {
+					lengths[idx]++
+					progressed = true
+				}
+			}
+		}
+
+		if !unresolved || !progressed {
+			break
+		}
+	}
+
+	used := make(map[string]int, len(sessions))
+	for i := range sessions {
+		prefixLen := lengths[i]
+		if prefixLen > len(seeds[i]) {
+			prefixLen = len(seeds[i])
+		}
+		shortID := seeds[i][:prefixLen]
+		if count, exists := used[shortID]; exists {
+			count++
+			used[shortID] = count
+			shortID = fmt.Sprintf("%s-%d", shortID, count)
+		} else {
+			used[shortID] = 1
+		}
+		sessions[i].ShortID = shortID
+	}
+}
+
+func sessionShortIDSeed(session openCodeSession) string {
+	seed := strings.TrimSpace(session.ID)
+	if seed == "" {
+		seed = strings.TrimSpace(session.StoragePath)
+	}
+	if seed == "" {
+		seed = fmt.Sprintf("%s|%d", strings.TrimSpace(session.Project), session.Time.Updated)
+	}
+
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(seed))
+	return fmt.Sprintf("%016x", hasher.Sum64())
+}
+
+func joinSessionShortIDs(sessions []openCodeSession) string {
+	ids := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		shortID := strings.TrimSpace(session.ShortID)
+		if shortID == "" {
+			shortID = "unknown"
+		}
+		ids = append(ids, "#"+shortID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+func sessionListLine(session openCodeSession, now time.Time) string {
+	title := sessionDisplayTitle(session)
+	formattedTime := formatSessionUpdatedAt(session.Time.Updated, now)
+	return fmt.Sprintf("%s: | #%s | %s | %s", session.Project, session.ShortID, formattedTime, title)
+}
+
+func sessionMatchesFilter(session openCodeSession, now time.Time, outputFilter string) bool {
+	if outputFilter == "" {
+		return true
+	}
+	line := strings.ToLower(sessionListLine(session, now))
+	return strings.Contains(line, outputFilter)
+}
+
+func confirmSessionMutation(action string, count int, force bool) (bool, error) {
+	if count <= 0 {
+		return true, nil
+	}
+	if force {
+		return true, nil
+	}
+	if !stdinIsTerminal() {
+		return false, fmt.Errorf("refusing to %s sessions in non-interactive mode (pass --yes to continue)", action)
+	}
+
+	actionLabel := action
+	if actionLabel != "" {
+		actionLabel = strings.ToUpper(actionLabel[:1]) + actionLabel[1:]
+	}
+	fmt.Printf("%s %d session(s)? [y/N]: ", actionLabel, count)
+	reader := bufio.NewReader(os.Stdin)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return false, err
+	}
+	answer := strings.ToLower(strings.TrimSpace(input))
+	if answer == "y" || answer == "yes" {
+		return true, nil
+	}
+	return false, nil
+}
+
+func stdinIsTerminal() bool {
+	stdinInfo, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return stdinInfo.Mode()&os.ModeCharDevice != 0
+}
+
+func archiveOpenCodeSessions(sessions []openCodeSession, archivePrefix string) (int, int, error) {
+	prefix := strings.TrimSpace(archivePrefix)
+	if prefix == "" {
+		return 0, 0, errors.New("archive-prefix cannot be empty when using --archive")
+	}
+	lowerPrefix := strings.ToLower(prefix)
+
+	archivedCount := 0
+	skippedCount := 0
+	for _, session := range sessions {
+		title := strings.TrimSpace(session.Title)
+		if strings.HasPrefix(strings.ToLower(title), lowerPrefix) {
+			skippedCount++
+			continue
+		}
+		baseTitle := title
+		if baseTitle == "" {
+			baseTitle = session.ID
+		}
+		newTitle := fmt.Sprintf("%s: %s", prefix, baseTitle)
+		if err := writeOpenCodeSessionTitle(session.StoragePath, newTitle); err != nil {
+			return archivedCount, skippedCount, err
+		}
+		archivedCount++
+	}
+
+	return archivedCount, skippedCount, nil
+}
+
+func writeOpenCodeSessionTitle(path, title string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if payload == nil {
+		return fmt.Errorf("parse %s: expected JSON object", path)
+	}
+	payload["title"] = title
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, updated, defaultFilePermission)
+}
+
+func deleteOpenCodeSessions(sessions []openCodeSession) (int, error) {
+	deletedCount := 0
+	for _, session := range sessions {
+		if err := os.Remove(session.StoragePath); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return deletedCount, err
+		}
+		deletedCount++
+		if err := removeDirIfEmpty(filepath.Dir(session.StoragePath)); err != nil {
+			return deletedCount, err
+		}
+	}
+	return deletedCount, nil
+}
+
+func removeDirIfEmpty(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if len(entries) > 0 {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func formatSessionUpdated(updatedMillis int64) string {

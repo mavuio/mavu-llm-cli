@@ -577,6 +577,170 @@ func TestListOpenCodeSessionsAppliesLineFilter(t *testing.T) {
 	}
 }
 
+func TestListOpenCodeSessionsArchivesMatchingSessions(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	chattyDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, filepath.Join(storageDir, "project"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
+
+	sessionPath := filepath.Join(storageDir, "session", "proj-chatty", "ses-1.json")
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
+		"id":       "proj-chatty",
+		"worktree": chattyDir,
+	})
+	writeJSONFile(t, sessionPath, map[string]any{
+		"id":    "ses-1",
+		"title": "Chatty Session One",
+		"time": map[string]any{
+			"updated": int64(1739443560000),
+		},
+	})
+
+	var runErr error
+	output := captureOutput(t, func() {
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--archive", "--yes", "chatty:"})
+	})
+	if runErr != nil {
+		t.Fatalf("archive opencode sessions: %v", runErr)
+	}
+	if !strings.Contains(output, "Archived 1 session(s)") {
+		t.Fatalf("expected archive confirmation output, got %q", output)
+	}
+
+	var updated map[string]any
+	loadJSON(t, sessionPath, &updated)
+	title, _ := updated["title"].(string)
+	if title != "archive: Chatty Session One" {
+		t.Fatalf("expected archived title, got %q", title)
+	}
+}
+
+func TestListOpenCodeSessionsDeletesMatchingSessions(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	chattyDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, filepath.Join(storageDir, "project"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
+
+	sessionPathDelete := filepath.Join(storageDir, "session", "proj-chatty", "ses-delete.json")
+	sessionPathKeep := filepath.Join(storageDir, "session", "proj-chatty", "ses-keep.json")
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
+		"id":       "proj-chatty",
+		"worktree": chattyDir,
+	})
+	writeJSONFile(t, sessionPathDelete, map[string]any{
+		"id":    "ses-delete",
+		"title": "Delete me",
+		"time": map[string]any{
+			"updated": int64(200),
+		},
+	})
+	writeJSONFile(t, sessionPathKeep, map[string]any{
+		"id":    "ses-keep",
+		"title": "Keep me",
+		"time": map[string]any{
+			"updated": int64(100),
+		},
+	})
+
+	var runErr error
+	output := captureOutput(t, func() {
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--delete", "--yes", "delete me"})
+	})
+	if runErr != nil {
+		t.Fatalf("delete opencode sessions: %v", runErr)
+	}
+	if !strings.Contains(output, "Deleted 1 session(s)") {
+		t.Fatalf("expected delete confirmation output, got %q", output)
+	}
+
+	assertFileNotExists(t, sessionPathDelete)
+	assertFileExists(t, sessionPathKeep)
+}
+
+func TestListOpenCodeSessionsMutatingModeRequiresFilter(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	err := listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--delete", "--yes"})
+	if err == nil {
+		t.Fatal("expected error when mutating without filter")
+	}
+	if !strings.Contains(err.Error(), "filter is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestListOpenCodeSessionsDeleteByShortID(t *testing.T) {
+	rootDir := t.TempDir()
+	storageDir := t.TempDir()
+
+	chattyDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, filepath.Join(storageDir, "project"))
+	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
+
+	sessionPathDelete := filepath.Join(storageDir, "session", "proj-chatty", "ses-delete.json")
+	sessionPathKeep := filepath.Join(storageDir, "session", "proj-chatty", "ses-keep.json")
+	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
+		"id":       "proj-chatty",
+		"worktree": chattyDir,
+	})
+	writeJSONFile(t, sessionPathDelete, map[string]any{
+		"id":    "ses-delete",
+		"title": "Delete me",
+		"time": map[string]any{
+			"updated": int64(200),
+		},
+	})
+	writeJSONFile(t, sessionPathKeep, map[string]any{
+		"id":    "ses-keep",
+		"title": "Keep me",
+		"time": map[string]any{
+			"updated": int64(100),
+		},
+	})
+
+	var listErr error
+	listOutput := captureOutput(t, func() {
+		listErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir})
+	})
+	if listErr != nil {
+		t.Fatalf("list opencode sessions: %v", listErr)
+	}
+
+	deleteID, ok := extractSessionShortIDFromOutput(listOutput, "Delete me")
+	if !ok {
+		t.Fatalf("expected short id for Delete me in output, got %q", listOutput)
+	}
+	keepID, ok := extractSessionShortIDFromOutput(listOutput, "Keep me")
+	if !ok {
+		t.Fatalf("expected short id for Keep me in output, got %q", listOutput)
+	}
+	if deleteID == keepID {
+		t.Fatalf("expected unique short ids, got %q", deleteID)
+	}
+
+	var deleteErr error
+	deleteOutput := captureOutput(t, func() {
+		deleteErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--delete", "--yes", "#" + deleteID})
+	})
+	if deleteErr != nil {
+		t.Fatalf("delete opencode sessions by short id: %v", deleteErr)
+	}
+	if !strings.Contains(deleteOutput, "Deleted 1 session(s)") {
+		t.Fatalf("expected delete confirmation output, got %q", deleteOutput)
+	}
+
+	assertFileNotExists(t, sessionPathDelete)
+	assertFileExists(t, sessionPathKeep)
+}
+
 func TestShouldSkipSessionTitle(t *testing.T) {
 	if !shouldSkipSessionTitle("archive step 1", "archive") {
 		t.Fatal("expected archive-prefixed title to be skipped")
@@ -615,6 +779,29 @@ func captureOutput(t *testing.T, fn func()) string {
 	output := <-done
 	_ = r.Close()
 	return output
+}
+
+func extractSessionShortIDFromOutput(output, title string) (string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, title) {
+			continue
+		}
+		marker := "| #"
+		start := strings.Index(line, marker)
+		if start == -1 {
+			continue
+		}
+		rest := line[start+len(marker):]
+		end := strings.Index(rest, " |")
+		if end == -1 {
+			continue
+		}
+		shortID := strings.TrimSpace(rest[:end])
+		if shortID != "" {
+			return shortID, true
+		}
+	}
+	return "", false
 }
 
 func createTemplateRoot(t *testing.T) string {

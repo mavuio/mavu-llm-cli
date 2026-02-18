@@ -30,7 +30,23 @@ llm types
 llm init --type <project-type> [--path <dir>]
 llm update [--path <dir>]
 llm template-paths
-llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [filter]
+llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]
+```
+
+Examples:
+
+```bash
+# list sessions
+llm os --path /www
+
+# list output includes a short id like #a1b2; use it as filter
+llm os --path /www "#a1b2"
+
+# archive matching sessions (prefixes title with "archive:")
+llm os --archive --yes "chatty:"
+
+# delete matching sessions
+llm os --delete --yes "#a1b2"
 ```
 
 When a project type defines `mcps`, llm writes `opencode.json`, `.mcp.json`, and
