@@ -1,4 +1,4 @@
 name = "Plain Shell"
-command = ". mvp"
+command = ". mvp -q"
 
 

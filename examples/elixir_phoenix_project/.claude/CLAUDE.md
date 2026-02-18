@@ -12,7 +12,7 @@ anything other than the healthcheck above
 ## ENVIRONMENT VARIABLES RULES
 
 You can get set the current environment-variables by running this before any command:
-`. mvp` sets the environment-variables for this project
+`. mvp -q` sets the environment-variables for this project quietly
 `. mvp -i` displays the current environment-variables for this project
 
 ## Project guidelines

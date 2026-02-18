@@ -478,6 +478,9 @@ func shouldSkipSessionTitle(title, prefix string) bool {
 	if prefix != "" && strings.HasPrefix(lowerTitle, prefix) {
 		return true
 	}
+	if strings.HasPrefix(lowerTitle, "future:") {
+		return true
+	}
 	if strings.Contains(lowerTitle, "(@explore subagent") {
 		return true
 	}

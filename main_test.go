@@ -581,6 +581,9 @@ func TestShouldSkipSessionTitle(t *testing.T) {
 	if !shouldSkipSessionTitle("archive step 1", "archive") {
 		t.Fatal("expected archive-prefixed title to be skipped")
 	}
+	if !shouldSkipSessionTitle("future: add caching", "archive") {
+		t.Fatal("expected future-prefixed title to be skipped")
+	}
 	if !shouldSkipSessionTitle("Inspect map (@explore subagent)", "archive") {
 		t.Fatal("expected explore-subagent title to be skipped")
 	}

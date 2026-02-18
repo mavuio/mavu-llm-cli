@@ -8,7 +8,21 @@
       "Bash(./mavu-llm version:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push)"
+      "Bash(git push)",
+      "WebSearch",
+      "Bash(cat:*)",
+      "Bash(git log:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:developers.openai.com)",
+      "Bash(beans prime:*)",
+      "Bash(beans list:*)",
+      "Bash(beans create:*)",
+      "Bash(git -C /Users/manfred/Documents/www/mavu-llm-cli status)",
+      "Bash(git -C /Users/manfred/Documents/www/mavu-llm-cli push)",
+      "Bash(./mavu-llm-cli version:*)",
+      "Bash(/Users/manfred/Documents/www/mavu-llm-cli/mavu-llm:*)",
+      "Bash(make:*)",
+      "Bash(. mvp)"
     ]
   },
   "enableAllProjectMcpServers": true,

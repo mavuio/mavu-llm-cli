@@ -10,7 +10,7 @@ description: Generate and run Ash/Phoenix database migrations with JSONB optimiz
 Use the appropriate mix task to generate migrations:
 
 ```bash
-mix ash.codegen <migration_name>
+. mvp -q; mix ash.codegen <migration_name>
 ```
 
 ## Fix JSONB Types
@@ -38,7 +38,7 @@ cat priv/repo/migrations/*_<migration_name>.exs
 Once the user has approved the migrations:
 
 ```bash
-mix ash.migrate
+. mvp -q; mix ash.migrate
 ```
 
 
