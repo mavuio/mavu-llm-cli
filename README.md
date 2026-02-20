@@ -30,7 +30,7 @@ llm types
 llm init --type <project-type> [--path <dir>]
 llm update [--path <dir>]
 llm template-paths
-llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]
+llm opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]
 ```
 
 Examples:

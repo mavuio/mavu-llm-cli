@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -42,7 +44,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
-	version                = "0.2.7"
+	version                = "0.2.8"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -146,7 +148,7 @@ func printUsage() {
 	fmt.Printf("  %s init --type <project-type> [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s update [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s template-paths\n", name)
-	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <dir>] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
+	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
 	fmt.Printf("  %s version\n", name)
 	fmt.Println()
 	fmt.Println("Commands:")
@@ -247,10 +249,10 @@ func listOpenCodeSessions(args []string) error {
 	flags.SetOutput(os.Stdout)
 	pathFlag := flags.String("path", "/www", "Directory containing project folders")
 	excludePrefixFlag := flags.String("exclude-prefix", "archive", "Ignore projects and session titles with this prefix")
-	storagePathFlag := flags.String("storage-path", defaultOpenCodeStoragePath(), "OpenCode storage directory")
+	storagePathFlag := flags.String("storage-path", defaultOpenCodeDBPath(), "OpenCode SQLite database path")
 	archiveFlag := flags.Bool("archive", false, "Archive matching sessions by prefixing title")
 	archivePrefixFlag := flags.String("archive-prefix", "archive", "Prefix used when archiving session titles")
-	deleteFlag := flags.Bool("delete", false, "Delete matching sessions from OpenCode storage")
+	deleteFlag := flags.Bool("delete", false, "Delete matching sessions from OpenCode database")
 	yesFlag := flags.Bool("yes", false, "Skip confirmation prompt for archive/delete")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -351,7 +353,7 @@ func listOpenCodeSessions(args []string) error {
 			fmt.Println("Cancelled.")
 			return nil
 		}
-		archivedCount, skippedCount, err := archiveOpenCodeSessions(matchedSessions, archivePrefix)
+		archivedCount, skippedCount, err := archiveOpenCodeSessions(storagePath, matchedSessions, archivePrefix)
 		if err != nil {
 			return err
 		}
@@ -372,7 +374,7 @@ func listOpenCodeSessions(args []string) error {
 		fmt.Println("Cancelled.")
 		return nil
 	}
-	deletedCount, err := deleteOpenCodeSessions(matchedSessions)
+	deletedCount, err := deleteOpenCodeSessions(storagePath, matchedSessions)
 	if err != nil {
 		return err
 	}
@@ -385,38 +387,21 @@ type openCodeSession struct {
 	Title       string
 	Project     string
 	ProjectPath string
-	StoragePath string
 	ShortID     string
 	Time        struct {
 		Updated int64 `json:"updated"`
 	} `json:"time"`
 }
 
-type openCodeSessionFile struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Directory string `json:"directory"`
-	Time      struct {
-		Updated int64 `json:"updated"`
-	} `json:"time"`
-}
-
-type openCodeProjectFile struct {
-	ID       string `json:"id"`
-	Worktree string `json:"worktree"`
-}
-
 func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCodeSession, error) {
-	projectStorageDir := filepath.Join(storagePath, "project")
-	sessionStorageDir := filepath.Join(storagePath, "session")
-
-	projectEntries, err := os.ReadDir(projectStorageDir)
+	db, err := openOpenCodeDB(storagePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	defer db.Close()
 
 	candidates, err := rootCandidates(rootDir)
 	if err != nil {
@@ -424,73 +409,60 @@ func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCod
 	}
 	prefix := strings.ToLower(strings.TrimSpace(excludePrefix))
 
+	rows, err := db.Query(`
+		SELECT
+			s.id,
+			s.title,
+			COALESCE(NULLIF(TRIM(s.directory), ''), p.worktree) AS session_root,
+			s.time_updated
+		FROM session s
+		LEFT JOIN project p ON p.id = s.project_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
 	var filtered []openCodeSession
-	for _, projectEntry := range projectEntries {
-		if projectEntry.IsDir() || filepath.Ext(projectEntry.Name()) != ".json" {
+	for rows.Next() {
+		var (
+			id          string
+			title       string
+			sessionRoot sql.NullString
+			timeUpdated int64
+		)
+		if err := rows.Scan(&id, &title, &sessionRoot, &timeUpdated); err != nil {
+			return nil, err
+		}
+
+		root := strings.TrimSpace(sessionRoot.String)
+		projectName, ok := sessionProjectName(root, candidates)
+		if !ok {
+			continue
+		}
+		if !worktreeExists(root) {
+			continue
+		}
+		normalizedTitle := strings.TrimSpace(title)
+		if shouldSkipSessionTitle(normalizedTitle, prefix) {
+			continue
+		}
+		if prefix != "" && strings.HasPrefix(strings.ToLower(projectName), prefix) {
 			continue
 		}
 
-		projectPath := filepath.Join(projectStorageDir, projectEntry.Name())
-		data, err := os.ReadFile(projectPath)
-		if err != nil {
-			return nil, err
-		}
-		var project openCodeProjectFile
-		if err := json.Unmarshal(data, &project); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", projectPath, err)
-		}
-
-		sessionsDir := filepath.Join(sessionStorageDir, project.ID)
-		sessionEntries, err := os.ReadDir(sessionsDir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
-		}
-		for _, sessionEntry := range sessionEntries {
-			if sessionEntry.IsDir() || filepath.Ext(sessionEntry.Name()) != ".json" {
-				continue
-			}
-
-			sessionPath := filepath.Join(sessionsDir, sessionEntry.Name())
-			sessionData, err := os.ReadFile(sessionPath)
-			if err != nil {
-				return nil, err
-			}
-			var sessionFile openCodeSessionFile
-			if err := json.Unmarshal(sessionData, &sessionFile); err != nil {
-				return nil, fmt.Errorf("parse %s: %w", sessionPath, err)
-			}
-
-			sessionRoot := strings.TrimSpace(sessionFile.Directory)
-			if sessionRoot == "" {
-				sessionRoot = project.Worktree
-			}
-			projectName, ok := sessionProjectName(sessionRoot, candidates)
-			if !ok {
-				continue
-			}
-			if !worktreeExists(sessionRoot) {
-				continue
-			}
-			title := strings.TrimSpace(sessionFile.Title)
-			if shouldSkipSessionTitle(title, prefix) {
-				continue
-			}
-			if prefix != "" && strings.HasPrefix(strings.ToLower(projectName), prefix) {
-				continue
-			}
-
-			filtered = append(filtered, openCodeSession{
-				ID:          sessionFile.ID,
-				Title:       sessionFile.Title,
-				Project:     projectName,
-				ProjectPath: absolutePath(sessionRoot),
-				StoragePath: sessionPath,
-				Time:        sessionFile.Time,
-			})
-		}
+		filtered = append(filtered, openCodeSession{
+			ID:          id,
+			Title:       title,
+			Project:     projectName,
+			ProjectPath: absolutePath(root),
+			Time: struct {
+				Updated int64 `json:"updated"`
+			}{Updated: timeUpdated},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	sort.Slice(filtered, func(i, j int) bool {
@@ -589,7 +561,7 @@ func assignSessionShortIDs(sessions []openCodeSession) {
 func sessionShortIDSeed(session openCodeSession) string {
 	seed := strings.TrimSpace(session.ID)
 	if seed == "" {
-		seed = strings.TrimSpace(session.StoragePath)
+		seed = strings.TrimSpace(session.ProjectPath)
 	}
 	if seed == "" {
 		seed = fmt.Sprintf("%s|%d", strings.TrimSpace(session.Project), session.Time.Updated)
@@ -662,12 +634,23 @@ func stdinIsTerminal() bool {
 	return stdinInfo.Mode()&os.ModeCharDevice != 0
 }
 
-func archiveOpenCodeSessions(sessions []openCodeSession, archivePrefix string) (int, int, error) {
+func archiveOpenCodeSessions(dbPath string, sessions []openCodeSession, archivePrefix string) (int, int, error) {
 	prefix := strings.TrimSpace(archivePrefix)
 	if prefix == "" {
 		return 0, 0, errors.New("archive-prefix cannot be empty when using --archive")
 	}
 	lowerPrefix := strings.ToLower(prefix)
+	db, err := openOpenCodeDB(dbPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer db.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
 
 	archivedCount := 0
 	skippedCount := 0
@@ -682,67 +665,47 @@ func archiveOpenCodeSessions(sessions []openCodeSession, archivePrefix string) (
 			baseTitle = session.ID
 		}
 		newTitle := fmt.Sprintf("%s: %s", prefix, baseTitle)
-		if err := writeOpenCodeSessionTitle(session.StoragePath, newTitle); err != nil {
+		if _, err := tx.Exec("UPDATE session SET title = ?, time_updated = ? WHERE id = ?", newTitle, time.Now().UnixMilli(), session.ID); err != nil {
 			return archivedCount, skippedCount, err
 		}
 		archivedCount++
+	}
+	if err := tx.Commit(); err != nil {
+		return archivedCount, skippedCount, err
 	}
 
 	return archivedCount, skippedCount, nil
 }
 
-func writeOpenCodeSessionTitle(path, title string) error {
-	data, err := os.ReadFile(path)
+func deleteOpenCodeSessions(dbPath string, sessions []openCodeSession) (int, error) {
+	db, err := openOpenCodeDB(dbPath)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
-	}
-	if payload == nil {
-		return fmt.Errorf("parse %s: expected JSON object", path)
-	}
-	payload["title"] = title
-	updated, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, updated, defaultFilePermission)
-}
+	defer db.Close()
 
-func deleteOpenCodeSessions(sessions []openCodeSession) (int, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
 	deletedCount := 0
 	for _, session := range sessions {
-		if err := os.Remove(session.StoragePath); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
+		result, err := tx.Exec("DELETE FROM session WHERE id = ?", session.ID)
+		if err != nil {
 			return deletedCount, err
 		}
-		deletedCount++
-		if err := removeDirIfEmpty(filepath.Dir(session.StoragePath)); err != nil {
+		affected, err := result.RowsAffected()
+		if err != nil {
 			return deletedCount, err
 		}
+		deletedCount += int(affected)
+	}
+	if err := tx.Commit(); err != nil {
+		return deletedCount, err
 	}
 	return deletedCount, nil
-}
-
-func removeDirIfEmpty(path string) error {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if len(entries) > 0 {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
 }
 
 func formatSessionUpdated(updatedMillis int64) string {
@@ -839,15 +802,44 @@ func absolutePath(path string) string {
 	return filepath.Clean(abs)
 }
 
-func defaultOpenCodeStoragePath() string {
+func defaultOpenCodeDBPath() string {
 	if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
-		return filepath.Join(dataHome, "opencode", "storage")
+		return filepath.Join(dataHome, "opencode", "opencode.db")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".local", "share", "opencode", "storage")
+		return filepath.Join(".local", "share", "opencode", "opencode.db")
 	}
-	return filepath.Join(home, ".local", "share", "opencode", "storage")
+	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+}
+
+func openOpenCodeDB(path string) (*sql.DB, error) {
+	dbPath := strings.TrimSpace(path)
+	if dbPath == "" {
+		return nil, errors.New("storage-path cannot be empty")
+	}
+	if info, err := os.Stat(dbPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
+	} else if info.IsDir() {
+		return nil, fmt.Errorf("storage-path must point to opencode.db, got directory: %s", dbPath)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 func rootCandidates(rootDir string) ([]string, error) {

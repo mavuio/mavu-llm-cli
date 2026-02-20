@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -317,7 +318,7 @@ func TestFormatSessionUpdatedAtShowsDateForOlderSessions(t *testing.T) {
 
 func TestFindOpenCodeSessionsReadsStorageAndExcludesPrefix(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
 	chattyDir := filepath.Join(rootDir, "chatty")
 	archiveDir := filepath.Join(rootDir, "archive-old")
@@ -326,72 +327,20 @@ func TestFindOpenCodeSessionsReadsStorageAndExcludesPrefix(t *testing.T) {
 	mustMkdirAll(t, chattyDir)
 	mustMkdirAll(t, archiveDir)
 	mustMkdirAll(t, outsideDir)
-	mustMkdirAll(t, filepath.Join(storageDir, "project"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-archive"))
 
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
-		"id":       "proj-chatty",
-		"worktree": chattyDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-archive.json"), map[string]any{
-		"id":       "proj-archive",
-		"worktree": archiveDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-outside.json"), map[string]any{
-		"id":       "proj-outside",
-		"worktree": outsideDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-missing.json"), map[string]any{
-		"id":       "proj-missing",
-		"worktree": filepath.Join(rootDir, "missing-project"),
-	})
+	insertOpenCodeProject(t, dbPath, "proj-chatty", chattyDir)
+	insertOpenCodeProject(t, dbPath, "proj-archive", archiveDir)
+	insertOpenCodeProject(t, dbPath, "proj-outside", outsideDir)
+	insertOpenCodeProject(t, dbPath, "proj-missing", filepath.Join(rootDir, "missing-project"))
 
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-new.json"), map[string]any{
-		"id":    "ses-new",
-		"title": "Newest Chatty Session",
-		"time": map[string]any{
-			"updated": int64(200),
-		},
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-old.json"), map[string]any{
-		"id":    "ses-old",
-		"title": "",
-		"time": map[string]any{
-			"updated": int64(100),
-		},
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-archive-title.json"), map[string]any{
-		"id":    "ses-archive-title",
-		"title": "archive hidden session",
-		"time": map[string]any{
-			"updated": int64(250),
-		},
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-explore.json"), map[string]any{
-		"id":    "ses-explore",
-		"title": "Inspect map API (@explore subagent)",
-		"time": map[string]any{
-			"updated": int64(240),
-		},
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-archive", "ses-archive.json"), map[string]any{
-		"id":    "ses-archive",
-		"title": "Archive Session",
-		"time": map[string]any{
-			"updated": int64(300),
-		},
-	})
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-missing"))
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-missing", "ses-missing.json"), map[string]any{
-		"id":    "ses-missing",
-		"title": "Missing Project Session",
-		"time": map[string]any{
-			"updated": int64(400),
-		},
-	})
+	insertOpenCodeSession(t, dbPath, "ses-new", "proj-chatty", "", "Newest Chatty Session", 200)
+	insertOpenCodeSession(t, dbPath, "ses-old", "proj-chatty", "", "", 100)
+	insertOpenCodeSession(t, dbPath, "ses-archive-title", "proj-chatty", "", "archive hidden session", 250)
+	insertOpenCodeSession(t, dbPath, "ses-explore", "proj-chatty", "", "Inspect map API (@explore subagent)", 240)
+	insertOpenCodeSession(t, dbPath, "ses-archive", "proj-archive", "", "Archive Session", 300)
+	insertOpenCodeSession(t, dbPath, "ses-missing", "proj-missing", "", "Missing Project Session", 400)
 
-	sessions, err := findOpenCodeSessions(rootDir, "archive", storageDir)
+	sessions, err := findOpenCodeSessions(rootDir, "archive", dbPath)
 	if err != nil {
 		t.Fatalf("find sessions: %v", err)
 	}
@@ -412,29 +361,17 @@ func TestFindOpenCodeSessionsReadsStorageAndExcludesPrefix(t *testing.T) {
 
 func TestFindOpenCodeSessionsUsesSessionDirectoryWhenPresent(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
 	chattyDir := filepath.Join(rootDir, "chatty")
 	archiveDir := filepath.Join(rootDir, "archive-old")
 	mustMkdirAll(t, chattyDir)
 	mustMkdirAll(t, archiveDir)
-	mustMkdirAll(t, filepath.Join(storageDir, "project"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-shared"))
 
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-shared.json"), map[string]any{
-		"id":       "proj-shared",
-		"worktree": archiveDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-shared", "ses-1.json"), map[string]any{
-		"id":        "ses-1",
-		"title":     "Session from sandbox directory",
-		"directory": chattyDir,
-		"time": map[string]any{
-			"updated": int64(50),
-		},
-	})
+	insertOpenCodeProject(t, dbPath, "proj-shared", archiveDir)
+	insertOpenCodeSession(t, dbPath, "ses-1", "proj-shared", chattyDir, "Session from sandbox directory", 50)
 
-	sessions, err := findOpenCodeSessions(rootDir, "archive", storageDir)
+	sessions, err := findOpenCodeSessions(rootDir, "archive", dbPath)
 	if err != nil {
 		t.Fatalf("find sessions: %v", err)
 	}
@@ -454,35 +391,18 @@ func TestWorktreeExistsFalseForMissingPath(t *testing.T) {
 
 func TestListOpenCodeSessionsPrintsSessionTitles(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
 	chattyDir := filepath.Join(rootDir, "chatty")
 	mustMkdirAll(t, chattyDir)
-	mustMkdirAll(t, filepath.Join(storageDir, "project"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
 
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
-		"id":       "proj-chatty",
-		"worktree": chattyDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-1.json"), map[string]any{
-		"id":    "ses-1",
-		"title": "Chatty Session One",
-		"time": map[string]any{
-			"updated": int64(1739443560000),
-		},
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-explore.json"), map[string]any{
-		"id":    "ses-explore",
-		"title": "Debug route (@explore subagent)",
-		"time": map[string]any{
-			"updated": int64(1739443561000),
-		},
-	})
+	insertOpenCodeProject(t, dbPath, "proj-chatty", chattyDir)
+	insertOpenCodeSession(t, dbPath, "ses-1", "proj-chatty", "", "Chatty Session One", 1739443560000)
+	insertOpenCodeSession(t, dbPath, "ses-explore", "proj-chatty", "", "Debug route (@explore subagent)", 1739443561000)
 
 	var runErr error
 	output := captureOutput(t, func() {
-		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir})
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath})
 	})
 	if runErr != nil {
 		t.Fatalf("list opencode sessions: %v", runErr)
@@ -511,7 +431,7 @@ func TestListOpenCodeSessionsPrintsSessionTitles(t *testing.T) {
 
 func TestListOpenCodeSessionsAppliesLineFilter(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
 	filmDir := filepath.Join(rootDir, "filmarchiv-ex")
 	chattyDir := filepath.Join(rootDir, "chatty")
@@ -519,48 +439,17 @@ func TestListOpenCodeSessionsAppliesLineFilter(t *testing.T) {
 	mustMkdirAll(t, filmDir)
 	mustMkdirAll(t, chattyDir)
 	mustMkdirAll(t, orfDir)
-	mustMkdirAll(t, filepath.Join(storageDir, "project"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-film"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-orf"))
 
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-film.json"), map[string]any{
-		"id":       "proj-film",
-		"worktree": filmDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
-		"id":       "proj-chatty",
-		"worktree": chattyDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-orf.json"), map[string]any{
-		"id":       "proj-orf",
-		"worktree": orfDir,
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-film", "ses-film.json"), map[string]any{
-		"id":    "ses-film",
-		"title": "Map issue",
-		"time": map[string]any{
-			"updated": int64(100),
-		},
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-chatty", "ses-chatty.json"), map[string]any{
-		"id":    "ses-chatty",
-		"title": "General chat",
-		"time": map[string]any{
-			"updated": int64(90),
-		},
-	})
-	writeJSONFile(t, filepath.Join(storageDir, "session", "proj-orf", "ses-orf.json"), map[string]any{
-		"id":    "ses-orf",
-		"title": "Managing orfaudio/filmarchiv-ex container instances",
-		"time": map[string]any{
-			"updated": int64(80),
-		},
-	})
+	insertOpenCodeProject(t, dbPath, "proj-film", filmDir)
+	insertOpenCodeProject(t, dbPath, "proj-chatty", chattyDir)
+	insertOpenCodeProject(t, dbPath, "proj-orf", orfDir)
+	insertOpenCodeSession(t, dbPath, "ses-film", "proj-film", "", "Map issue", 100)
+	insertOpenCodeSession(t, dbPath, "ses-chatty", "proj-chatty", "", "General chat", 90)
+	insertOpenCodeSession(t, dbPath, "ses-orf", "proj-orf", "", "Managing orfaudio/filmarchiv-ex container instances", 80)
 
 	var runErr error
 	output := captureOutput(t, func() {
-		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "filmarchiv-ex:"})
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "filmarchiv-ex:"})
 	})
 	if runErr != nil {
 		t.Fatalf("list opencode sessions: %v", runErr)
@@ -579,29 +468,17 @@ func TestListOpenCodeSessionsAppliesLineFilter(t *testing.T) {
 
 func TestListOpenCodeSessionsArchivesMatchingSessions(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
 	chattyDir := filepath.Join(rootDir, "chatty")
 	mustMkdirAll(t, chattyDir)
-	mustMkdirAll(t, filepath.Join(storageDir, "project"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
 
-	sessionPath := filepath.Join(storageDir, "session", "proj-chatty", "ses-1.json")
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
-		"id":       "proj-chatty",
-		"worktree": chattyDir,
-	})
-	writeJSONFile(t, sessionPath, map[string]any{
-		"id":    "ses-1",
-		"title": "Chatty Session One",
-		"time": map[string]any{
-			"updated": int64(1739443560000),
-		},
-	})
+	insertOpenCodeProject(t, dbPath, "proj-chatty", chattyDir)
+	insertOpenCodeSession(t, dbPath, "ses-1", "proj-chatty", "", "Chatty Session One", 1739443560000)
 
 	var runErr error
 	output := captureOutput(t, func() {
-		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--archive", "--yes", "chatty:"})
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--archive", "--yes", "chatty:"})
 	})
 	if runErr != nil {
 		t.Fatalf("archive opencode sessions: %v", runErr)
@@ -610,9 +487,10 @@ func TestListOpenCodeSessionsArchivesMatchingSessions(t *testing.T) {
 		t.Fatalf("expected archive confirmation output, got %q", output)
 	}
 
-	var updated map[string]any
-	loadJSON(t, sessionPath, &updated)
-	title, _ := updated["title"].(string)
+	title, ok := openCodeSessionTitle(t, dbPath, "ses-1")
+	if !ok {
+		t.Fatal("expected session to exist")
+	}
 	if title != "archive: Chatty Session One" {
 		t.Fatalf("expected archived title, got %q", title)
 	}
@@ -620,37 +498,18 @@ func TestListOpenCodeSessionsArchivesMatchingSessions(t *testing.T) {
 
 func TestListOpenCodeSessionsDeletesMatchingSessions(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
 	chattyDir := filepath.Join(rootDir, "chatty")
 	mustMkdirAll(t, chattyDir)
-	mustMkdirAll(t, filepath.Join(storageDir, "project"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
 
-	sessionPathDelete := filepath.Join(storageDir, "session", "proj-chatty", "ses-delete.json")
-	sessionPathKeep := filepath.Join(storageDir, "session", "proj-chatty", "ses-keep.json")
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
-		"id":       "proj-chatty",
-		"worktree": chattyDir,
-	})
-	writeJSONFile(t, sessionPathDelete, map[string]any{
-		"id":    "ses-delete",
-		"title": "Delete me",
-		"time": map[string]any{
-			"updated": int64(200),
-		},
-	})
-	writeJSONFile(t, sessionPathKeep, map[string]any{
-		"id":    "ses-keep",
-		"title": "Keep me",
-		"time": map[string]any{
-			"updated": int64(100),
-		},
-	})
+	insertOpenCodeProject(t, dbPath, "proj-chatty", chattyDir)
+	insertOpenCodeSession(t, dbPath, "ses-delete", "proj-chatty", "", "Delete me", 200)
+	insertOpenCodeSession(t, dbPath, "ses-keep", "proj-chatty", "", "Keep me", 100)
 
 	var runErr error
 	output := captureOutput(t, func() {
-		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--delete", "--yes", "delete me"})
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--delete", "--yes", "delete me"})
 	})
 	if runErr != nil {
 		t.Fatalf("delete opencode sessions: %v", runErr)
@@ -659,15 +518,19 @@ func TestListOpenCodeSessionsDeletesMatchingSessions(t *testing.T) {
 		t.Fatalf("expected delete confirmation output, got %q", output)
 	}
 
-	assertFileNotExists(t, sessionPathDelete)
-	assertFileExists(t, sessionPathKeep)
+	if openCodeSessionExists(t, dbPath, "ses-delete") {
+		t.Fatal("expected ses-delete to be removed")
+	}
+	if !openCodeSessionExists(t, dbPath, "ses-keep") {
+		t.Fatal("expected ses-keep to remain")
+	}
 }
 
 func TestListOpenCodeSessionsMutatingModeRequiresFilter(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
-	err := listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--delete", "--yes"})
+	err := listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--delete", "--yes"})
 	if err == nil {
 		t.Fatal("expected error when mutating without filter")
 	}
@@ -678,37 +541,18 @@ func TestListOpenCodeSessionsMutatingModeRequiresFilter(t *testing.T) {
 
 func TestListOpenCodeSessionsDeleteByShortID(t *testing.T) {
 	rootDir := t.TempDir()
-	storageDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
 
 	chattyDir := filepath.Join(rootDir, "chatty")
 	mustMkdirAll(t, chattyDir)
-	mustMkdirAll(t, filepath.Join(storageDir, "project"))
-	mustMkdirAll(t, filepath.Join(storageDir, "session", "proj-chatty"))
 
-	sessionPathDelete := filepath.Join(storageDir, "session", "proj-chatty", "ses-delete.json")
-	sessionPathKeep := filepath.Join(storageDir, "session", "proj-chatty", "ses-keep.json")
-	writeJSONFile(t, filepath.Join(storageDir, "project", "proj-chatty.json"), map[string]any{
-		"id":       "proj-chatty",
-		"worktree": chattyDir,
-	})
-	writeJSONFile(t, sessionPathDelete, map[string]any{
-		"id":    "ses-delete",
-		"title": "Delete me",
-		"time": map[string]any{
-			"updated": int64(200),
-		},
-	})
-	writeJSONFile(t, sessionPathKeep, map[string]any{
-		"id":    "ses-keep",
-		"title": "Keep me",
-		"time": map[string]any{
-			"updated": int64(100),
-		},
-	})
+	insertOpenCodeProject(t, dbPath, "proj-chatty", chattyDir)
+	insertOpenCodeSession(t, dbPath, "ses-delete", "proj-chatty", "", "Delete me", 200)
+	insertOpenCodeSession(t, dbPath, "ses-keep", "proj-chatty", "", "Keep me", 100)
 
 	var listErr error
 	listOutput := captureOutput(t, func() {
-		listErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir})
+		listErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath})
 	})
 	if listErr != nil {
 		t.Fatalf("list opencode sessions: %v", listErr)
@@ -728,7 +572,7 @@ func TestListOpenCodeSessionsDeleteByShortID(t *testing.T) {
 
 	var deleteErr error
 	deleteOutput := captureOutput(t, func() {
-		deleteErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", storageDir, "--delete", "--yes", "#" + deleteID})
+		deleteErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--delete", "--yes", "#" + deleteID})
 	})
 	if deleteErr != nil {
 		t.Fatalf("delete opencode sessions by short id: %v", deleteErr)
@@ -737,8 +581,12 @@ func TestListOpenCodeSessionsDeleteByShortID(t *testing.T) {
 		t.Fatalf("expected delete confirmation output, got %q", deleteOutput)
 	}
 
-	assertFileNotExists(t, sessionPathDelete)
-	assertFileExists(t, sessionPathKeep)
+	if openCodeSessionExists(t, dbPath, "ses-delete") {
+		t.Fatal("expected ses-delete to be removed")
+	}
+	if !openCodeSessionExists(t, dbPath, "ses-keep") {
+		t.Fatal("expected ses-keep to remain")
+	}
 }
 
 func TestShouldSkipSessionTitle(t *testing.T) {
@@ -802,6 +650,115 @@ func extractSessionShortIDFromOutput(output, title string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func createOpenCodeTestDB(t *testing.T) string {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	withOpenCodeTestDB(t, dbPath, func(db *sql.DB) {
+		_, err := db.Exec(`
+			CREATE TABLE project (
+				id TEXT PRIMARY KEY,
+				worktree TEXT NOT NULL
+			);
+			CREATE TABLE session (
+				id TEXT PRIMARY KEY,
+				project_id TEXT NOT NULL,
+				parent_id TEXT,
+				slug TEXT NOT NULL,
+				directory TEXT NOT NULL,
+				title TEXT NOT NULL,
+				version TEXT NOT NULL,
+				share_url TEXT,
+				summary_additions INTEGER,
+				summary_deletions INTEGER,
+				summary_files INTEGER,
+				summary_diffs TEXT,
+				revert TEXT,
+				permission TEXT,
+				time_created INTEGER NOT NULL,
+				time_updated INTEGER NOT NULL,
+				time_compacting INTEGER,
+				time_archived INTEGER,
+				FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE
+			);
+		`)
+		if err != nil {
+			t.Fatalf("create opencode test db schema: %v", err)
+		}
+	})
+	return dbPath
+}
+
+func withOpenCodeTestDB(t *testing.T, dbPath string, fn func(db *sql.DB)) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+	fn(db)
+}
+
+func insertOpenCodeProject(t *testing.T, dbPath, id, worktree string) {
+	t.Helper()
+	withOpenCodeTestDB(t, dbPath, func(db *sql.DB) {
+		if _, err := db.Exec("INSERT INTO project(id, worktree) VALUES (?, ?)", id, worktree); err != nil {
+			t.Fatalf("insert project %s: %v", id, err)
+		}
+	})
+}
+
+func insertOpenCodeSession(t *testing.T, dbPath, id, projectID, directory, title string, updated int64) {
+	t.Helper()
+	withOpenCodeTestDB(t, dbPath, func(db *sql.DB) {
+		if _, err := db.Exec(
+			"INSERT INTO session(id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			id,
+			projectID,
+			id,
+			directory,
+			title,
+			"test",
+			updated,
+			updated,
+		); err != nil {
+			t.Fatalf("insert session %s: %v", id, err)
+		}
+	})
+}
+
+func openCodeSessionTitle(t *testing.T, dbPath, id string) (string, bool) {
+	t.Helper()
+	var (
+		title string
+		ok    bool
+	)
+	withOpenCodeTestDB(t, dbPath, func(db *sql.DB) {
+		err := db.QueryRow("SELECT title FROM session WHERE id = ?", id).Scan(&title)
+		if err == nil {
+			ok = true
+			return
+		}
+		if err != sql.ErrNoRows {
+			t.Fatalf("query title for %s: %v", id, err)
+		}
+	})
+	return title, ok
+}
+
+func openCodeSessionExists(t *testing.T, dbPath, id string) bool {
+	t.Helper()
+	var count int
+	withOpenCodeTestDB(t, dbPath, func(db *sql.DB) {
+		if err := db.QueryRow("SELECT COUNT(1) FROM session WHERE id = ?", id).Scan(&count); err != nil {
+			t.Fatalf("count session %s: %v", id, err)
+		}
+	})
+	return count > 0
 }
 
 func createTemplateRoot(t *testing.T) string {
