@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"golang.org/x/term"
 	_ "modernc.org/sqlite"
 )
 
@@ -148,7 +149,7 @@ func printUsage() {
 	fmt.Printf("  %s init --type <project-type> [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s update [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s template-paths\n", name)
-	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
+	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--tui] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
 	fmt.Printf("  %s version\n", name)
 	fmt.Println()
 	fmt.Println("Commands:")
@@ -156,7 +157,7 @@ func printUsage() {
 	fmt.Println("  init            Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
 	fmt.Println("  update          Re-run setup using stored project type")
 	fmt.Println("  template-paths  Show template search paths")
-	fmt.Println("  opencode-sessions (os)  List OpenCode sessions with short IDs, or archive/delete matching sessions")
+	fmt.Println("  opencode-sessions (os)  List sessions, batch archive/delete, or open an interactive TUI")
 	fmt.Println("  version         Show current version")
 	fmt.Println()
 	fmt.Println("Notes:")
@@ -250,6 +251,7 @@ func listOpenCodeSessions(args []string) error {
 	pathFlag := flags.String("path", "/www", "Directory containing project folders")
 	excludePrefixFlag := flags.String("exclude-prefix", "archive", "Ignore projects and session titles with this prefix")
 	storagePathFlag := flags.String("storage-path", defaultOpenCodeDBPath(), "OpenCode SQLite database path")
+	tuiFlag := flags.Bool("tui", false, "Open interactive session list (j/k or arrows move, a archive, d delete, v toggle archived)")
 	archiveFlag := flags.Bool("archive", false, "Archive matching sessions by prefixing title")
 	archivePrefixFlag := flags.String("archive-prefix", "archive", "Prefix used when archiving session titles")
 	deleteFlag := flags.Bool("delete", false, "Delete matching sessions from OpenCode database")
@@ -274,6 +276,9 @@ func listOpenCodeSessions(args []string) error {
 	if *archiveFlag && *deleteFlag {
 		return errors.New("--archive and --delete cannot be used together")
 	}
+	if *tuiFlag && (*archiveFlag || *deleteFlag || *yesFlag) {
+		return errors.New("--tui cannot be combined with --archive, --delete, or --yes")
+	}
 	mutatingMode := *archiveFlag || *deleteFlag
 	outputFilter := strings.ToLower(strings.TrimSpace(strings.Join(flags.Args(), " ")))
 	if mutatingMode && outputFilter == "" {
@@ -292,6 +297,32 @@ func listOpenCodeSessions(args []string) error {
 		if sessionMatchesFilter(session, now, outputFilter) {
 			matchedSessions = append(matchedSessions, session)
 		}
+	}
+
+	if *tuiFlag {
+		tuiSessions := sessions
+		if excludePrefix != "" {
+			tuiSessions, err = findOpenCodeSessions(rootDir, "", storagePath)
+			if err != nil {
+				return err
+			}
+			assignSessionShortIDs(tuiSessions)
+		}
+		if len(tuiSessions) == 0 {
+			fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
+			return nil
+		}
+
+		archivedCount, deletedCount, err := runOpenCodeSessionsTUI(storagePath, tuiSessions, excludePrefix, outputFilter, archivePrefix)
+		if err != nil {
+			return err
+		}
+		if archivedCount == 0 && deletedCount == 0 {
+			fmt.Println("No session changes made.")
+			return nil
+		}
+		fmt.Printf("TUI complete. Archived %d session(s), deleted %d session(s)\n", archivedCount, deletedCount)
+		return nil
 	}
 
 	if len(sessions) == 0 {
@@ -634,6 +665,14 @@ func stdinIsTerminal() bool {
 	return stdinInfo.Mode()&os.ModeCharDevice != 0
 }
 
+func stdoutIsTerminal() bool {
+	stdoutInfo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return stdoutInfo.Mode()&os.ModeCharDevice != 0
+}
+
 func archiveOpenCodeSessions(dbPath string, sessions []openCodeSession, archivePrefix string) (int, int, error) {
 	prefix := strings.TrimSpace(archivePrefix)
 	if prefix == "" {
@@ -706,6 +745,337 @@ func deleteOpenCodeSessions(dbPath string, sessions []openCodeSession) (int, err
 		return deletedCount, err
 	}
 	return deletedCount, nil
+}
+
+const (
+	openCodeTUIKeyNoop    = "noop"
+	openCodeTUIKeyQuit    = "quit"
+	openCodeTUIKeyUp      = "up"
+	openCodeTUIKeyDown    = "down"
+	openCodeTUIKeyDelete  = "delete"
+	openCodeTUIKeyArchive = "archive"
+	openCodeTUIKeyToggle  = "toggle"
+)
+
+func runOpenCodeSessionsTUI(dbPath string, sessions []openCodeSession, excludePrefix, outputFilter, archivePrefix string) (int, int, error) {
+	if !stdinIsTerminal() || !stdoutIsTerminal() {
+		return 0, 0, errors.New("--tui requires an interactive terminal")
+	}
+	fd := int(os.Stdin.Fd())
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer term.Restore(fd, state)
+
+	fmt.Print("\x1b[?1049h\x1b[?25l")
+	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m")
+
+	allSessions := append([]openCodeSession(nil), sessions...)
+	reader := bufio.NewReader(os.Stdin)
+	selected := 0
+	showArchived := false
+	archivedTotal := 0
+	deletedTotal := 0
+	status := fmt.Sprintf("Loaded %d session(s).", len(allSessions))
+	lowerExcludePrefix := strings.ToLower(strings.TrimSpace(excludePrefix))
+
+	for {
+		now := time.Now()
+		visibleSessions := filterOpenCodeSessionsForTUI(allSessions, now, outputFilter, lowerExcludePrefix, showArchived)
+		if len(visibleSessions) > 0 && selected >= len(visibleSessions) {
+			selected = len(visibleSessions) - 1
+		}
+		renderOpenCodeSessionsTUI(visibleSessions, selected, status, outputFilter, showArchived, archivePrefix)
+
+		key, err := readOpenCodeTUIKey(reader)
+		if err != nil {
+			return archivedTotal, deletedTotal, err
+		}
+
+		switch key {
+		case openCodeTUIKeyQuit:
+			return archivedTotal, deletedTotal, nil
+		case openCodeTUIKeyUp:
+			if selected > 0 {
+				selected--
+			}
+		case openCodeTUIKeyDown:
+			if selected < len(visibleSessions)-1 {
+				selected++
+			}
+		case openCodeTUIKeyToggle:
+			showArchived = !showArchived
+			selected = 0
+			if showArchived {
+				status = "Archived sessions are now visible."
+			} else {
+				status = "Archived sessions are now hidden."
+			}
+		case openCodeTUIKeyArchive:
+			if len(visibleSessions) == 0 {
+				status = "No sessions to archive in the current view."
+				continue
+			}
+			target := visibleSessions[selected]
+			archivedCount, skippedCount, err := archiveOpenCodeSessions(dbPath, []openCodeSession{target}, archivePrefix)
+			if err != nil {
+				status = fmt.Sprintf("Archive failed for #%s: %v", target.ShortID, err)
+				continue
+			}
+			if archivedCount == 0 && skippedCount > 0 {
+				status = fmt.Sprintf("Session #%s is already archived.", target.ShortID)
+				continue
+			}
+
+			archivedTotal += archivedCount
+			baseTitle := strings.TrimSpace(target.Title)
+			if baseTitle == "" {
+				baseTitle = target.ID
+			}
+			updatedTitle := fmt.Sprintf("%s: %s", strings.TrimSpace(archivePrefix), baseTitle)
+			target.Title = updatedTitle
+			target.Time.Updated = time.Now().UnixMilli()
+			if idx := findOpenCodeSessionIndexByID(allSessions, target.ID); idx >= 0 {
+				allSessions[idx] = target
+			}
+			status = fmt.Sprintf("Archived #%s.", target.ShortID)
+		case openCodeTUIKeyDelete:
+			if len(visibleSessions) == 0 {
+				status = "No sessions to delete in the current view."
+				continue
+			}
+			target := visibleSessions[selected]
+			deletedCount, err := deleteOpenCodeSessions(dbPath, []openCodeSession{target})
+			if err != nil {
+				status = fmt.Sprintf("Delete failed for #%s: %v", target.ShortID, err)
+				continue
+			}
+			if deletedCount == 0 {
+				status = fmt.Sprintf("Session #%s was not deleted.", target.ShortID)
+				continue
+			}
+
+			deletedTotal += deletedCount
+			if idx := findOpenCodeSessionIndexByID(allSessions, target.ID); idx >= 0 {
+				allSessions = removeOpenCodeSessionAt(allSessions, idx)
+			}
+			if selected >= len(visibleSessions)-1 && selected > 0 {
+				selected--
+			}
+			status = fmt.Sprintf("Deleted #%s.", target.ShortID)
+		}
+	}
+}
+
+func renderOpenCodeSessionsTUI(sessions []openCodeSession, selected int, status, outputFilter string, showArchived bool, archivePrefix string) {
+	width, height := sessionTUITerminalSize()
+	headerLines := 7
+	if outputFilter != "" {
+		headerLines++
+	}
+	rowsAvailable := height - headerLines
+	if rowsAvailable < 3 {
+		rowsAvailable = 3
+	}
+
+	start, end := sessionTUIRange(len(sessions), selected, rowsAvailable)
+
+	var buf strings.Builder
+	buf.WriteString("\x1b[2J\x1b[H")
+	writeTerminalLine(&buf, "OpenCode Sessions TUI")
+	writeTerminalLine(&buf, "Keys: j/k or arrows move, a archive, d delete, v toggle archived, q quit")
+	archiveState := "shown"
+	if !showArchived {
+		archiveState = "hidden"
+	}
+	writeTerminalLine(&buf, fmt.Sprintf("Archived sessions: %s (prefix %q)", archiveState, strings.TrimSpace(archivePrefix)))
+	if outputFilter != "" {
+		writeTerminalLine(&buf, fmt.Sprintf("Filter: %s", outputFilter))
+	}
+	writeTerminalLine(&buf, "")
+
+	if len(sessions) == 0 {
+		writeTerminalLine(&buf, "No sessions available in this list.")
+	} else {
+		for i := start; i < end; i++ {
+			marker := " "
+			if i == selected {
+				marker = ">"
+			}
+			title := sessionDisplayTitle(sessions[i])
+			updated := formatSessionUpdated(sessions[i].Time.Updated)
+			line := fmt.Sprintf("%s %s | #%s | %s | %s", marker, sessions[i].Project, sessions[i].ShortID, updated, title)
+			writeTerminalLine(&buf, truncateForTerminalWidth(line, width))
+		}
+		if end < len(sessions) {
+			writeTerminalLine(&buf, fmt.Sprintf("... %d more session(s)", len(sessions)-end))
+		}
+	}
+
+	if status != "" {
+		writeTerminalLine(&buf, "")
+		writeTerminalLine(&buf, truncateForTerminalWidth(status, width))
+	}
+
+	fmt.Print(buf.String())
+}
+
+func readOpenCodeTUIKey(reader *bufio.Reader) (string, error) {
+	key, err := reader.ReadByte()
+	if err != nil {
+		return "", err
+	}
+
+	switch key {
+	case 3, 'q', 'Q':
+		return openCodeTUIKeyQuit, nil
+	case 'k':
+		return openCodeTUIKeyUp, nil
+	case 'j':
+		return openCodeTUIKeyDown, nil
+	case 'a':
+		return openCodeTUIKeyArchive, nil
+	case 'd':
+		return openCodeTUIKeyDelete, nil
+	case 'v', 'V':
+		return openCodeTUIKeyToggle, nil
+	case 0x1b:
+		return readOpenCodeTUIEscapeKey(reader), nil
+	default:
+		return openCodeTUIKeyNoop, nil
+	}
+}
+
+func readOpenCodeTUIEscapeKey(reader *bufio.Reader) string {
+	if reader.Buffered() == 0 {
+		return openCodeTUIKeyNoop
+	}
+	next, err := reader.ReadByte()
+	if err != nil {
+		return openCodeTUIKeyNoop
+	}
+	if next != '[' {
+		return openCodeTUIKeyNoop
+	}
+	if reader.Buffered() == 0 {
+		return openCodeTUIKeyNoop
+	}
+	arrow, err := reader.ReadByte()
+	if err != nil {
+		return openCodeTUIKeyNoop
+	}
+	if arrow == 'A' {
+		return openCodeTUIKeyUp
+	}
+	if arrow == 'B' {
+		return openCodeTUIKeyDown
+	}
+	return openCodeTUIKeyNoop
+}
+
+func filterOpenCodeSessionsForTUI(sessions []openCodeSession, now time.Time, outputFilter, excludePrefix string, showArchived bool) []openCodeSession {
+	filtered := make([]openCodeSession, 0, len(sessions))
+	for _, session := range sessions {
+		if !sessionVisibleInTUI(session, now, outputFilter, excludePrefix, showArchived) {
+			continue
+		}
+		filtered = append(filtered, session)
+	}
+	return filtered
+}
+
+func sessionVisibleInTUI(session openCodeSession, now time.Time, outputFilter, excludePrefix string, showArchived bool) bool {
+	title := strings.TrimSpace(session.Title)
+	if showArchived {
+		if shouldSkipSessionTitle(title, "") {
+			return false
+		}
+	} else {
+		if shouldSkipSessionTitle(title, excludePrefix) {
+			return false
+		}
+	}
+	return sessionMatchesFilter(session, now, outputFilter)
+}
+
+func findOpenCodeSessionIndexByID(sessions []openCodeSession, id string) int {
+	for i := range sessions {
+		if sessions[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func writeTerminalLine(buf *strings.Builder, line string) {
+	buf.WriteString(line)
+	buf.WriteString("\r\n")
+}
+
+func sessionTUIRange(total, selected, rows int) (int, int) {
+	if total <= 0 {
+		return 0, 0
+	}
+	if rows <= 0 || total <= rows {
+		return 0, total
+	}
+	if selected < 0 {
+		selected = 0
+	}
+	if selected >= total {
+		selected = total - 1
+	}
+	start := selected - rows/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + rows
+	if end > total {
+		end = total
+		start = end - rows
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
+}
+
+func sessionTUITerminalSize() (int, int) {
+	if !stdoutIsTerminal() {
+		return 120, 24
+	}
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 120, 24
+	}
+	if width < 40 {
+		width = 40
+	}
+	if height < 10 {
+		height = 10
+	}
+	return width, height
+}
+
+func truncateForTerminalWidth(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if len(text) <= width {
+		return text
+	}
+	if width <= 3 {
+		return text[:width]
+	}
+	return text[:width-3] + "..."
+}
+
+func removeOpenCodeSessionAt(sessions []openCodeSession, idx int) []openCodeSession {
+	if idx < 0 || idx >= len(sessions) {
+		return sessions
+	}
+	return append(sessions[:idx], sessions[idx+1:]...)
 }
 
 func formatSessionUpdated(updatedMillis int64) string {

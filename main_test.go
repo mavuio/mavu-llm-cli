@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"database/sql"
 	"encoding/json"
@@ -536,6 +537,78 @@ func TestListOpenCodeSessionsMutatingModeRequiresFilter(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "filter is required") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestListOpenCodeSessionsTUIRejectsMutatingFlags(t *testing.T) {
+	rootDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	err := listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--tui", "--archive", "chatty"})
+	if err == nil {
+		t.Fatal("expected error when combining --tui with mutating flags")
+	}
+	if !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSessionVisibleInTUIArchivedToggle(t *testing.T) {
+	now := time.Now()
+	archived := openCodeSession{ID: "ses-1", Title: "archive: Done", Project: "chatty", ShortID: "abc123"}
+	archived.Time.Updated = now.UnixMilli()
+
+	if sessionVisibleInTUI(archived, now, "", "archive", false) {
+		t.Fatal("expected archived session to be hidden when toggle is off")
+	}
+	if !sessionVisibleInTUI(archived, now, "", "archive", true) {
+		t.Fatal("expected archived session to be shown when toggle is on")
+	}
+
+	explore := openCodeSession{ID: "ses-2", Title: "Investigate (@explore subagent)", Project: "chatty", ShortID: "def456"}
+	explore.Time.Updated = now.UnixMilli()
+	if sessionVisibleInTUI(explore, now, "", "archive", true) {
+		t.Fatal("expected explore subagent sessions to stay hidden")
+	}
+}
+
+func TestReadOpenCodeTUIKeyArrowNavigation(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("\x1b[A\x1b[B"))
+
+	key, err := readOpenCodeTUIKey(reader)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if key != openCodeTUIKeyUp {
+		t.Fatalf("expected up key, got %q", key)
+	}
+
+	key, err = readOpenCodeTUIKey(reader)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if key != openCodeTUIKeyDown {
+		t.Fatalf("expected down key, got %q", key)
+	}
+}
+
+func TestReadOpenCodeTUIKeyArchiveIsLowercaseOnly(t *testing.T) {
+	archiveReader := bufio.NewReader(strings.NewReader("a"))
+	key, err := readOpenCodeTUIKey(archiveReader)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if key != openCodeTUIKeyArchive {
+		t.Fatalf("expected archive key, got %q", key)
+	}
+
+	upperReader := bufio.NewReader(strings.NewReader("A"))
+	key, err = readOpenCodeTUIKey(upperReader)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if key != openCodeTUIKeyNoop {
+		t.Fatalf("expected noop for uppercase A, got %q", key)
 	}
 }
 

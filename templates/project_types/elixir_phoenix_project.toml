@@ -1,6 +1,6 @@
 name = "Elixir Phoenix"
 description = "Phoenix + Elixir project"
-skills = ["elixir-architect", "prod-eval", "bit-ship", "phoenix-server","beans","beans-stats", "dokku-helper","db-migrations","mavu","prod-joblogs"]
+skills = ["elixir-architect", "prod-eval", "bit-ship", "phoenix-server","beans","beans-stats", "dokku-helper","db-migrations","mavu","prod-joblogs", "archive"]
 commands = ["teach"]
 mcps = ["tidewave"]
 
