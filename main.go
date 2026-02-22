@@ -48,7 +48,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.8"
+	version                = "0.2.9"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -256,10 +256,10 @@ func listOpenCodeSessions(args []string) error {
 	excludePrefixFlag := flags.String("exclude-prefix", "archive", "Ignore projects and session titles with this prefix")
 	storagePathFlag := flags.String("storage-path", defaultOpenCodeDBPath(), "OpenCode SQLite database path")
 	serveFlag := flags.Bool("serve", false, "Run OpenCode sessions HTTP API server")
-	listenFlag := flags.String("listen", "127.0.0.1:8787", "Address for --serve mode")
+	listenFlag := flags.String("listen", "192.168.102.10:8787", "Address for --serve mode")
 	tokenDefault := strings.TrimSpace(os.Getenv(sessionsAPITokenEnvVar))
 	tokenFlag := flags.String("token", tokenDefault, fmt.Sprintf("Bearer token for --serve mode (defaults to %s)", sessionsAPITokenEnvVar))
-	tuiFlag := flags.Bool("tui", false, "Open interactive session list (j/k or arrows move, a archive, d delete, v toggle archived)")
+	tuiFlag := flags.Bool("tui", false, "Open interactive session list (j/k or arrows move, a archive, d delete, 0-3 toggle status, q quit)")
 	archiveFlag := flags.Bool("archive", false, "Archive matching sessions by prefixing title")
 	archivePrefixFlag := flags.String("archive-prefix", "archive", "Prefix used when archiving session titles")
 	deleteFlag := flags.Bool("delete", false, "Delete matching sessions from OpenCode database")
@@ -307,7 +307,7 @@ func listOpenCodeSessions(args []string) error {
 		return errors.New("filter is required when using --archive or --delete")
 	}
 
-	sessions, err := findOpenCodeSessions(rootDir, excludePrefix, storagePath)
+	sessions, err := findOpenCodeSessions(rootDir, excludePrefix, storagePath, true)
 	if err != nil {
 		return err
 	}
@@ -322,20 +322,17 @@ func listOpenCodeSessions(args []string) error {
 	}
 
 	if *tuiFlag {
-		tuiSessions := sessions
-		if excludePrefix != "" {
-			tuiSessions, err = findOpenCodeSessions(rootDir, "", storagePath)
-			if err != nil {
-				return err
-			}
-			assignSessionShortIDs(tuiSessions)
+		tuiSessions, err := findOpenCodeSessions(rootDir, "", storagePath, false)
+		if err != nil {
+			return err
 		}
+		assignSessionShortIDs(tuiSessions)
 		if len(tuiSessions) == 0 {
 			fmt.Printf("No OpenCode sessions found in %s\n", sessionScopeLabel(rootDir))
 			return nil
 		}
 
-		archivedCount, deletedCount, err := runOpenCodeSessionsTUI(storagePath, tuiSessions, excludePrefix, outputFilter, archivePrefix)
+		archivedCount, deletedCount, err := runOpenCodeSessionsTUI(storagePath, tuiSessions, outputFilter, archivePrefix)
 		if err != nil {
 			return err
 		}
@@ -446,6 +443,19 @@ type openCodeSession struct {
 	} `json:"time"`
 }
 
+type sessionStatus struct {
+	Name    string
+	Key     byte
+	Visible bool
+}
+
+var knownSessionStatuses = []sessionStatus{
+	{Name: "active", Key: '0', Visible: true},
+	{Name: "archive", Key: '1', Visible: false},
+	{Name: "future", Key: '2', Visible: false},
+	{Name: "delete", Key: '3', Visible: false},
+}
+
 type openCodeSessionsServerConfig struct {
 	RootDir       string
 	ExcludePrefix string
@@ -459,6 +469,7 @@ type openCodeSessionAPIItem struct {
 	ID             string `json:"id"`
 	ShortID        string `json:"short_id"`
 	Title          string `json:"title"`
+	Status         string `json:"status"`
 	Project        string `json:"project"`
 	ProjectPath    string `json:"project_path"`
 	UpdatedMillis  int64  `json:"updated_millis"`
@@ -476,10 +487,12 @@ type openCodeSessionsMutationRequest struct {
 	IDs           []string `json:"ids"`
 	ShortIDs      []string `json:"short_ids"`
 	ArchivePrefix string   `json:"archive_prefix"`
+	Status        string   `json:"status"`
 }
 
 type openCodeSessionsMutationResponse struct {
 	Action       string   `json:"action"`
+	Status       string   `json:"status,omitempty"`
 	Affected     int      `json:"affected"`
 	Skipped      int      `json:"skipped,omitempty"`
 	SessionIDs   []string `json:"session_ids"`
@@ -487,9 +500,6 @@ type openCodeSessionsMutationResponse struct {
 }
 
 func serveOpenCodeSessionsAPI(cfg openCodeSessionsServerConfig) error {
-	if strings.TrimSpace(cfg.RootDir) == "" {
-		return errors.New("path cannot be empty")
-	}
 	if strings.TrimSpace(cfg.StoragePath) == "" {
 		return errors.New("storage-path cannot be empty")
 	}
@@ -540,7 +550,7 @@ func newOpenCodeSessionsAPIHandler(cfg openCodeSessionsServerConfig) http.Handle
 			excludePrefix = cfg.ExcludePrefix
 		}
 
-		sessions, err := findOpenCodeSessions(cfg.RootDir, "", cfg.StoragePath)
+		sessions, err := findOpenCodeSessions(cfg.RootDir, "", cfg.StoragePath, false)
 		if err != nil {
 			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -548,13 +558,18 @@ func newOpenCodeSessionsAPIHandler(cfg openCodeSessionsServerConfig) http.Handle
 		assignSessionShortIDs(sessions)
 
 		now := time.Now()
-		visible := filterOpenCodeSessionsForTUI(sessions, now, filter, strings.ToLower(excludePrefix), includeArchived)
+		apiStatusVisibility := defaultStatusVisibility()
+		if includeArchived {
+			apiStatusVisibility["archive"] = true
+		}
+		visible := filterOpenCodeSessionsForTUI(sessions, now, filter, apiStatusVisibility)
 		items := make([]openCodeSessionAPIItem, 0, len(visible))
 		for _, session := range visible {
 			items = append(items, openCodeSessionAPIItem{
 				ID:             session.ID,
 				ShortID:        session.ShortID,
 				Title:          sessionDisplayTitle(session),
+				Status:         sessionStatusOrActive(session.Title),
 				Project:        session.Project,
 				ProjectPath:    session.ProjectPath,
 				UpdatedMillis:  session.Time.Updated,
@@ -610,6 +625,56 @@ func newOpenCodeSessionsAPIHandler(cfg openCodeSessionsServerConfig) http.Handle
 			return
 		}
 		writeOpenCodeJSON(w, http.StatusOK, buildMutationResponse("archive", targets, affected, skipped))
+	}))
+
+	mux.HandleFunc("/sessions/status", openCodeSessionsAuth(cfg.Token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeOpenCodeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		var req openCodeSessionsMutationRequest
+		if err := decodeOpenCodeJSONBody(r, &req); err != nil {
+			writeOpenCodeAPIError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		status := strings.ToLower(strings.TrimSpace(req.Status))
+		if !isKnownSessionStatus(status) {
+			writeOpenCodeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":            "unknown status",
+				"requested_status": status,
+				"allowed_statuses": sessionStatusNames(),
+			})
+			return
+		}
+
+		targets, missingIDs, missingShortIDs, err := loadMutationSessions(cfg, req.IDs, req.ShortIDs)
+		if err != nil {
+			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(missingIDs) > 0 || len(missingShortIDs) > 0 {
+			writeOpenCodeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":             "some requested sessions were not found",
+				"missing_ids":       missingIDs,
+				"missing_short_ids": missingShortIDs,
+			})
+			return
+		}
+		if len(targets) == 0 {
+			writeOpenCodeAPIError(w, http.StatusBadRequest, "request must include at least one id or short_id")
+			return
+		}
+
+		affected, skipped, err := updateOpenCodeSessionsStatus(cfg.StoragePath, targets, status)
+		if err != nil {
+			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		resp := buildMutationResponse("status", targets, affected, skipped)
+		resp.Status = status
+		writeOpenCodeJSON(w, http.StatusOK, resp)
 	}))
 
 	mux.HandleFunc("/sessions/delete", openCodeSessionsAuth(cfg.Token, func(w http.ResponseWriter, r *http.Request) {
@@ -705,7 +770,7 @@ func decodeOpenCodeJSONBody(r *http.Request, target any) error {
 }
 
 func loadMutationSessions(cfg openCodeSessionsServerConfig, ids, shortIDs []string) ([]openCodeSession, []string, []string, error) {
-	sessions, err := findOpenCodeSessions(cfg.RootDir, "", cfg.StoragePath)
+	sessions, err := findOpenCodeSessions(cfg.RootDir, "", cfg.StoragePath, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -823,7 +888,7 @@ func writeOpenCodeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCodeSession, error) {
+func findOpenCodeSessions(rootDir, excludePrefix, storagePath string, skipKnownStatuses bool) ([]openCodeSession, error) {
 	db, err := openOpenCodeDB(storagePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -887,7 +952,13 @@ func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCod
 			continue
 		}
 		normalizedTitle := strings.TrimSpace(title)
-		if shouldSkipSessionTitle(normalizedTitle, prefix) {
+		if shouldSkipSessionTitle(normalizedTitle) {
+			continue
+		}
+		if skipKnownStatuses && sessionTitleStatus(normalizedTitle) != "" {
+			continue
+		}
+		if prefix != "" && strings.HasPrefix(strings.ToLower(normalizedTitle), prefix) {
 			continue
 		}
 		if prefix != "" && strings.HasPrefix(strings.ToLower(projectName), prefix) {
@@ -1135,6 +1206,73 @@ func archiveOpenCodeSessions(dbPath string, sessions []openCodeSession, archiveP
 	return archivedCount, skippedCount, nil
 }
 
+func updateOpenCodeSessionsStatus(dbPath string, sessions []openCodeSession, status string) (int, int, error) {
+	normalizedStatus := strings.ToLower(strings.TrimSpace(status))
+	if !isKnownSessionStatus(normalizedStatus) {
+		return 0, 0, fmt.Errorf("unknown status %q", status)
+	}
+
+	db, err := openOpenCodeDB(dbPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer db.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	affectedCount := 0
+	skippedCount := 0
+	for _, session := range sessions {
+		title, changed := sessionTitleWithStatus(session, normalizedStatus)
+		if !changed {
+			skippedCount++
+			continue
+		}
+		if _, err := tx.Exec("UPDATE session SET title = ?, time_updated = ? WHERE id = ?", title, time.Now().UnixMilli(), session.ID); err != nil {
+			return affectedCount, skippedCount, err
+		}
+		affectedCount++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return affectedCount, skippedCount, err
+	}
+	return affectedCount, skippedCount, nil
+}
+
+func sessionTitleWithStatus(session openCodeSession, status string) (string, bool) {
+	normalizedStatus := strings.ToLower(strings.TrimSpace(status))
+	currentTitle := strings.TrimSpace(session.Title)
+	baseTitle := sessionBaseTitle(currentTitle)
+	if baseTitle == "" {
+		baseTitle = strings.TrimSpace(session.ID)
+	}
+
+	targetTitle := baseTitle
+	if normalizedStatus != "active" {
+		targetTitle = fmt.Sprintf("%s: %s", normalizedStatus, baseTitle)
+	}
+
+	return targetTitle, targetTitle != currentTitle
+}
+
+func sessionBaseTitle(title string) string {
+	trimmed := strings.TrimSpace(title)
+	status := sessionTitleStatus(trimmed)
+	if status == "" {
+		return trimmed
+	}
+	prefix := status + ":"
+	if len(trimmed) <= len(prefix) {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[len(prefix):])
+}
+
 func deleteOpenCodeSessions(dbPath string, sessions []openCodeSession) (int, error) {
 	db, err := openOpenCodeDB(dbPath)
 	if err != nil {
@@ -1173,10 +1311,10 @@ const (
 	openCodeTUIKeyDown    = "down"
 	openCodeTUIKeyDelete  = "delete"
 	openCodeTUIKeyArchive = "archive"
-	openCodeTUIKeyToggle  = "toggle"
+	openCodeTUIKeyCycle   = "cycle"
 )
 
-func runOpenCodeSessionsTUI(dbPath string, sessions []openCodeSession, excludePrefix, outputFilter, archivePrefix string) (int, int, error) {
+func runOpenCodeSessionsTUI(dbPath string, sessions []openCodeSession, outputFilter, archivePrefix string) (int, int, error) {
 	if !stdinIsTerminal() || !stdoutIsTerminal() {
 		return 0, 0, errors.New("--tui requires an interactive terminal")
 	}
@@ -1193,45 +1331,56 @@ func runOpenCodeSessionsTUI(dbPath string, sessions []openCodeSession, excludePr
 	allSessions := append([]openCodeSession(nil), sessions...)
 	reader := bufio.NewReader(os.Stdin)
 	selected := 0
-	showArchived := false
+	statusVisibility := defaultStatusVisibility()
 	archivedTotal := 0
 	deletedTotal := 0
 	status := fmt.Sprintf("Loaded %d session(s).", len(allSessions))
-	lowerExcludePrefix := strings.ToLower(strings.TrimSpace(excludePrefix))
 
 	for {
 		now := time.Now()
-		visibleSessions := filterOpenCodeSessionsForTUI(allSessions, now, outputFilter, lowerExcludePrefix, showArchived)
+		visibleSessions := filterOpenCodeSessionsForTUI(allSessions, now, outputFilter, statusVisibility)
 		if len(visibleSessions) > 0 && selected >= len(visibleSessions) {
 			selected = len(visibleSessions) - 1
 		}
-		renderOpenCodeSessionsTUI(visibleSessions, selected, status, outputFilter, showArchived, archivePrefix)
+		renderOpenCodeSessionsTUI(visibleSessions, selected, status, outputFilter, statusVisibility)
 
 		key, err := readOpenCodeTUIKey(reader)
 		if err != nil {
 			return archivedTotal, deletedTotal, err
 		}
 
-		switch key {
-		case openCodeTUIKeyQuit:
+		switch {
+		case key == openCodeTUIKeyQuit:
 			return archivedTotal, deletedTotal, nil
-		case openCodeTUIKeyUp:
+		case key == openCodeTUIKeyUp:
 			if selected > 0 {
 				selected--
 			}
-		case openCodeTUIKeyDown:
+		case key == openCodeTUIKeyDown:
 			if selected < len(visibleSessions)-1 {
 				selected++
 			}
-		case openCodeTUIKeyToggle:
-			showArchived = !showArchived
+		case key == openCodeTUIKeyCycle:
+			next := cycleSessionStatus(statusVisibility)
+			statusVisibility = next
 			selected = 0
-			if showArchived {
-				status = "Archived sessions are now visible."
+			if soloStatus := soloVisibleStatus(next); soloStatus != "" {
+				status = fmt.Sprintf("Showing only %s sessions.", soloStatus)
 			} else {
-				status = "Archived sessions are now hidden."
+				status = "Showing active sessions."
 			}
-		case openCodeTUIKeyArchive:
+		case strings.HasPrefix(key, "toggle:"):
+			statusName := strings.TrimPrefix(key, "toggle:")
+			if _, ok := statusVisibility[statusName]; ok {
+				statusVisibility[statusName] = !statusVisibility[statusName]
+				selected = 0
+				if statusVisibility[statusName] {
+					status = fmt.Sprintf("%s sessions are now visible.", statusName)
+				} else {
+					status = fmt.Sprintf("%s sessions are now hidden.", statusName)
+				}
+			}
+		case key == openCodeTUIKeyArchive:
 			if len(visibleSessions) == 0 {
 				status = "No sessions to archive in the current view."
 				continue
@@ -1259,7 +1408,7 @@ func runOpenCodeSessionsTUI(dbPath string, sessions []openCodeSession, excludePr
 				allSessions[idx] = target
 			}
 			status = fmt.Sprintf("Archived #%s.", target.ShortID)
-		case openCodeTUIKeyDelete:
+		case key == openCodeTUIKeyDelete:
 			if len(visibleSessions) == 0 {
 				status = "No sessions to delete in the current view."
 				continue
@@ -1287,7 +1436,7 @@ func runOpenCodeSessionsTUI(dbPath string, sessions []openCodeSession, excludePr
 	}
 }
 
-func renderOpenCodeSessionsTUI(sessions []openCodeSession, selected int, status, outputFilter string, showArchived bool, archivePrefix string) {
+func renderOpenCodeSessionsTUI(sessions []openCodeSession, selected int, status, outputFilter string, statusVisibility map[string]bool) {
 	width, height := sessionTUITerminalSize()
 	headerLines := 7
 	if outputFilter != "" {
@@ -1303,12 +1452,16 @@ func renderOpenCodeSessionsTUI(sessions []openCodeSession, selected int, status,
 	var buf strings.Builder
 	buf.WriteString("\x1b[2J\x1b[H")
 	writeTerminalLine(&buf, "OpenCode Sessions TUI")
-	writeTerminalLine(&buf, "Keys: j/k or arrows move, a archive, d delete, v toggle archived, q quit")
-	archiveState := "shown"
-	if !showArchived {
-		archiveState = "hidden"
+	writeTerminalLine(&buf, "Keys: j/k move, a archive, d delete, v cycle, 0-3 toggle status, q quit")
+	var statusChips []string
+	for _, s := range knownSessionStatuses {
+		label := s.Name
+		if statusVisibility[s.Name] {
+			label = strings.ToUpper(label)
+		}
+		statusChips = append(statusChips, fmt.Sprintf("[%c:%s]", s.Key, label))
 	}
-	writeTerminalLine(&buf, fmt.Sprintf("Archived sessions: %s (prefix %q)", archiveState, strings.TrimSpace(archivePrefix)))
+	writeTerminalLine(&buf, "Statuses: "+strings.Join(statusChips, " "))
 	if outputFilter != "" {
 		writeTerminalLine(&buf, fmt.Sprintf("Filter: %s", outputFilter))
 	}
@@ -1358,7 +1511,14 @@ func readOpenCodeTUIKey(reader *bufio.Reader) (string, error) {
 	case 'd':
 		return openCodeTUIKeyDelete, nil
 	case 'v', 'V':
-		return openCodeTUIKeyToggle, nil
+		return openCodeTUIKeyCycle, nil
+	case '0', '1', '2', '3':
+		for _, s := range knownSessionStatuses {
+			if s.Key == key {
+				return "toggle:" + s.Name, nil
+			}
+		}
+		return openCodeTUIKeyNoop, nil
 	case 0x1b:
 		return readOpenCodeTUIEscapeKey(reader), nil
 	default:
@@ -1393,10 +1553,10 @@ func readOpenCodeTUIEscapeKey(reader *bufio.Reader) string {
 	return openCodeTUIKeyNoop
 }
 
-func filterOpenCodeSessionsForTUI(sessions []openCodeSession, now time.Time, outputFilter, excludePrefix string, showArchived bool) []openCodeSession {
+func filterOpenCodeSessionsForTUI(sessions []openCodeSession, now time.Time, outputFilter string, statusVisibility map[string]bool) []openCodeSession {
 	filtered := make([]openCodeSession, 0, len(sessions))
 	for _, session := range sessions {
-		if !sessionVisibleInTUI(session, now, outputFilter, excludePrefix, showArchived) {
+		if !sessionVisibleInTUI(session, now, outputFilter, statusVisibility) {
 			continue
 		}
 		filtered = append(filtered, session)
@@ -1404,16 +1564,17 @@ func filterOpenCodeSessionsForTUI(sessions []openCodeSession, now time.Time, out
 	return filtered
 }
 
-func sessionVisibleInTUI(session openCodeSession, now time.Time, outputFilter, excludePrefix string, showArchived bool) bool {
+func sessionVisibleInTUI(session openCodeSession, now time.Time, outputFilter string, statusVisibility map[string]bool) bool {
 	title := strings.TrimSpace(session.Title)
-	if showArchived {
-		if shouldSkipSessionTitle(title, "") {
-			return false
-		}
-	} else {
-		if shouldSkipSessionTitle(title, excludePrefix) {
-			return false
-		}
+	if shouldSkipSessionTitle(title) {
+		return false
+	}
+	status := sessionTitleStatus(title)
+	if status == "" {
+		status = "active"
+	}
+	if !statusVisibility[status] {
+		return false
 	}
 	return sessionMatchesFilter(session, now, outputFilter)
 }
@@ -1526,18 +1687,103 @@ func worktreeExists(path string) bool {
 	return info.IsDir()
 }
 
-func shouldSkipSessionTitle(title, prefix string) bool {
+func shouldSkipSessionTitle(title string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(title)), "(@explore subagent")
+}
+
+func sessionTitleStatus(title string) string {
 	lowerTitle := strings.ToLower(strings.TrimSpace(title))
-	if prefix != "" && strings.HasPrefix(lowerTitle, prefix) {
-		return true
+	for _, s := range knownSessionStatuses {
+		if strings.HasPrefix(lowerTitle, s.Name+":") {
+			return s.Name
+		}
 	}
-	if strings.HasPrefix(lowerTitle, "future:") {
-		return true
+	return ""
+}
+
+func sessionStatusOrActive(title string) string {
+	status := sessionTitleStatus(title)
+	if status == "" {
+		return "active"
 	}
-	if strings.Contains(lowerTitle, "(@explore subagent") {
-		return true
+	return status
+}
+
+func isKnownSessionStatus(status string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	for _, s := range knownSessionStatuses {
+		if s.Name == normalized {
+			return true
+		}
 	}
 	return false
+}
+
+func sessionStatusNames() []string {
+	names := make([]string, 0, len(knownSessionStatuses))
+	for _, s := range knownSessionStatuses {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+func defaultStatusVisibility() map[string]bool {
+	vis := make(map[string]bool, len(knownSessionStatuses))
+	for _, s := range knownSessionStatuses {
+		vis[s.Name] = s.Visible
+	}
+	return vis
+}
+
+func soloVisibleStatus(vis map[string]bool) string {
+	var solo string
+	for _, s := range knownSessionStatuses {
+		if vis[s.Name] {
+			if solo != "" {
+				return ""
+			}
+			solo = s.Name
+		}
+	}
+	return solo
+}
+
+func cycleSessionStatus(current map[string]bool) map[string]bool {
+	// Cycle order: default → archive only → future only → delete only → default → ...
+	// Find which non-active status is currently solo-visible.
+	solo := soloVisibleStatus(current)
+	// Determine next: find the solo status in the non-active statuses, advance to next.
+	nonActive := make([]sessionStatus, 0, len(knownSessionStatuses)-1)
+	for _, s := range knownSessionStatuses {
+		if s.Name != "active" {
+			nonActive = append(nonActive, s)
+		}
+	}
+	next := defaultStatusVisibility()
+	if solo == "" || solo == "active" {
+		// Currently at default (active shown) → show first non-active only.
+		if len(nonActive) > 0 {
+			for k := range next {
+				next[k] = false
+			}
+			next[nonActive[0].Name] = true
+		}
+		return next
+	}
+	// Find current solo in nonActive, advance to next or wrap to default.
+	for i, s := range nonActive {
+		if s.Name == solo {
+			if i+1 < len(nonActive) {
+				for k := range next {
+					next[k] = false
+				}
+				next[nonActive[i+1].Name] = true
+			}
+			// else: wrap to default (active shown, rest hidden)
+			return next
+		}
+	}
+	return next
 }
 
 func formatProjectLabel(name, projectPath string) string {

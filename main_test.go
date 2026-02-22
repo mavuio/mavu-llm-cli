@@ -343,7 +343,7 @@ func TestFindOpenCodeSessionsReadsStorageAndExcludesPrefix(t *testing.T) {
 	insertOpenCodeSession(t, dbPath, "ses-archive", "proj-archive", "", "Archive Session", 300)
 	insertOpenCodeSession(t, dbPath, "ses-missing", "proj-missing", "", "Missing Project Session", 400)
 
-	sessions, err := findOpenCodeSessions(rootDir, "archive", dbPath)
+	sessions, err := findOpenCodeSessions(rootDir, "archive", dbPath, true)
 	if err != nil {
 		t.Fatalf("find sessions: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestFindOpenCodeSessionsUsesSessionDirectoryWhenPresent(t *testing.T) {
 	insertOpenCodeProject(t, dbPath, "proj-shared", archiveDir)
 	insertOpenCodeSession(t, dbPath, "ses-1", "proj-shared", chattyDir, "Session from sandbox directory", 50)
 
-	sessions, err := findOpenCodeSessions(rootDir, "archive", dbPath)
+	sessions, err := findOpenCodeSessions(rootDir, "archive", dbPath, true)
 	if err != nil {
 		t.Fatalf("find sessions: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestFindOpenCodeSessionsEmptyRootReturnsAllSessions(t *testing.T) {
 	insertOpenCodeSession(t, dbPath, "ses-chatty", "proj-chatty", "", "Chatty Session", 200)
 	insertOpenCodeSession(t, dbPath, "ses-macbook", "proj-macbook", "", "Macbook Session", 100)
 
-	sessions, err := findOpenCodeSessions("", "", dbPath)
+	sessions, err := findOpenCodeSessions("", "", dbPath, false)
 	if err != nil {
 		t.Fatalf("find sessions: %v", err)
 	}
@@ -584,22 +584,59 @@ func TestListOpenCodeSessionsTUIRejectsMutatingFlags(t *testing.T) {
 	}
 }
 
-func TestSessionVisibleInTUIArchivedToggle(t *testing.T) {
+func TestSessionVisibleInTUIStatusToggle(t *testing.T) {
 	now := time.Now()
 	archived := openCodeSession{ID: "ses-1", Title: "archive: Done", Project: "chatty", ShortID: "abc123"}
 	archived.Time.Updated = now.UnixMilli()
 
-	if sessionVisibleInTUI(archived, now, "", "archive", false) {
+	hidden := defaultStatusVisibility()
+	if sessionVisibleInTUI(archived, now, "", hidden) {
 		t.Fatal("expected archived session to be hidden when toggle is off")
 	}
-	if !sessionVisibleInTUI(archived, now, "", "archive", true) {
+	shown := defaultStatusVisibility()
+	shown["archive"] = true
+	if !sessionVisibleInTUI(archived, now, "", shown) {
 		t.Fatal("expected archived session to be shown when toggle is on")
 	}
 
 	explore := openCodeSession{ID: "ses-2", Title: "Investigate (@explore subagent)", Project: "chatty", ShortID: "def456"}
 	explore.Time.Updated = now.UnixMilli()
-	if sessionVisibleInTUI(explore, now, "", "archive", true) {
+	allShown := map[string]bool{"active": true, "archive": true, "future": true, "delete": true}
+	if sessionVisibleInTUI(explore, now, "", allShown) {
 		t.Fatal("expected explore subagent sessions to stay hidden")
+	}
+
+	active := openCodeSession{ID: "ses-5", Title: "Regular session", Project: "chatty", ShortID: "mno345"}
+	active.Time.Updated = now.UnixMilli()
+	if !sessionVisibleInTUI(active, now, "", hidden) {
+		t.Fatal("expected active session to be visible by default")
+	}
+	activeHidden := defaultStatusVisibility()
+	activeHidden["active"] = false
+	if sessionVisibleInTUI(active, now, "", activeHidden) {
+		t.Fatal("expected active session to be hidden when toggled off")
+	}
+
+	future := openCodeSession{ID: "ses-3", Title: "future: add caching", Project: "chatty", ShortID: "ghi789"}
+	future.Time.Updated = now.UnixMilli()
+	if sessionVisibleInTUI(future, now, "", hidden) {
+		t.Fatal("expected future session to be hidden by default")
+	}
+	futureShown := defaultStatusVisibility()
+	futureShown["future"] = true
+	if !sessionVisibleInTUI(future, now, "", futureShown) {
+		t.Fatal("expected future session to be shown when toggled on")
+	}
+
+	del := openCodeSession{ID: "ses-4", Title: "delete: old stuff", Project: "chatty", ShortID: "jkl012"}
+	del.Time.Updated = now.UnixMilli()
+	if sessionVisibleInTUI(del, now, "", hidden) {
+		t.Fatal("expected delete session to be hidden by default")
+	}
+	deleteShown := defaultStatusVisibility()
+	deleteShown["delete"] = true
+	if !sessionVisibleInTUI(del, now, "", deleteShown) {
+		t.Fatal("expected delete session to be shown when toggled on")
 	}
 }
 
@@ -702,6 +739,9 @@ func TestOpenCodeSessionsAPIListCanToggleArchived(t *testing.T) {
 	if hidden.Count != 1 {
 		t.Fatalf("expected 1 visible session with archived hidden, got %d", hidden.Count)
 	}
+	if hidden.Sessions[0].Status != "active" {
+		t.Fatalf("expected active status, got %q", hidden.Sessions[0].Status)
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/sessions?include_archived=true", nil)
@@ -717,6 +757,16 @@ func TestOpenCodeSessionsAPIListCanToggleArchived(t *testing.T) {
 	}
 	if shown.Count != 2 {
 		t.Fatalf("expected 2 sessions when archived are shown, got %d", shown.Count)
+	}
+	statusByID := make(map[string]string, len(shown.Sessions))
+	for _, item := range shown.Sessions {
+		statusByID[item.ID] = item.Status
+	}
+	if statusByID["ses-new"] != "active" {
+		t.Fatalf("expected ses-new status active, got %q", statusByID["ses-new"])
+	}
+	if statusByID["ses-archived"] != "archive" {
+		t.Fatalf("expected ses-archived status archive, got %q", statusByID["ses-archived"])
 	}
 }
 
@@ -762,6 +812,149 @@ func TestOpenCodeSessionsAPIArchiveByIDOnlyTargetsRequestedSession(t *testing.T)
 	}
 	if strings.HasPrefix(otherTitle, "archive:") {
 		t.Fatalf("expected other session to remain unchanged, got %q", otherTitle)
+	}
+}
+
+func TestOpenCodeSessionsAPIStatusByShortID(t *testing.T) {
+	rootDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	projectDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, projectDir)
+	insertOpenCodeProject(t, dbPath, "proj-chatty", projectDir)
+	insertOpenCodeSession(t, dbPath, "ses-target", "proj-chatty", "", "Target", 200)
+	insertOpenCodeSession(t, dbPath, "ses-other", "proj-chatty", "", "Other", 100)
+
+	sessions, err := findOpenCodeSessions(rootDir, "", dbPath, false)
+	if err != nil {
+		t.Fatalf("find sessions: %v", err)
+	}
+	assignSessionShortIDs(sessions)
+
+	var targetShortID string
+	for _, session := range sessions {
+		if session.ID == "ses-target" {
+			targetShortID = session.ShortID
+			break
+		}
+	}
+	if targetShortID == "" {
+		t.Fatal("expected short id for ses-target")
+	}
+
+	handler := newOpenCodeSessionsAPIHandler(openCodeSessionsServerConfig{
+		RootDir:       rootDir,
+		ExcludePrefix: "archive",
+		StoragePath:   dbPath,
+		ArchivePrefix: "archive",
+		Token:         "secret-token",
+	})
+
+	body := strings.NewReader(fmt.Sprintf(`{"short_ids":["%s"],"status":"future"}`, targetShortID))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sessions/status", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp openCodeSessionsMutationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Action != "status" {
+		t.Fatalf("expected action status, got %q", resp.Action)
+	}
+	if resp.Status != "future" {
+		t.Fatalf("expected status future, got %q", resp.Status)
+	}
+	if resp.Affected != 1 {
+		t.Fatalf("expected affected 1, got %d", resp.Affected)
+	}
+
+	targetTitle, ok := openCodeSessionTitle(t, dbPath, "ses-target")
+	if !ok {
+		t.Fatal("expected target session to exist")
+	}
+	if !strings.HasPrefix(targetTitle, "future:") {
+		t.Fatalf("expected target session future status, got %q", targetTitle)
+	}
+
+	otherTitle, ok := openCodeSessionTitle(t, dbPath, "ses-other")
+	if !ok {
+		t.Fatal("expected other session to exist")
+	}
+	if strings.HasPrefix(otherTitle, "future:") {
+		t.Fatalf("expected other session unchanged, got %q", otherTitle)
+	}
+}
+
+func TestOpenCodeSessionsAPIStatusActiveRemovesPrefix(t *testing.T) {
+	rootDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	projectDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, projectDir)
+	insertOpenCodeProject(t, dbPath, "proj-chatty", projectDir)
+	insertOpenCodeSession(t, dbPath, "ses-target", "proj-chatty", "", "archive: Already done", 200)
+
+	handler := newOpenCodeSessionsAPIHandler(openCodeSessionsServerConfig{
+		RootDir:       rootDir,
+		ExcludePrefix: "archive",
+		StoragePath:   dbPath,
+		ArchivePrefix: "archive",
+		Token:         "secret-token",
+	})
+
+	body := strings.NewReader(`{"ids":["ses-target"],"status":"ACTIVE"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sessions/status", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	title, ok := openCodeSessionTitle(t, dbPath, "ses-target")
+	if !ok {
+		t.Fatal("expected target session to exist")
+	}
+	if title != "Already done" {
+		t.Fatalf("expected prefix removed, got %q", title)
+	}
+}
+
+func TestOpenCodeSessionsAPIStatusRejectsUnknownStatus(t *testing.T) {
+	rootDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	projectDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, projectDir)
+	insertOpenCodeProject(t, dbPath, "proj-chatty", projectDir)
+	insertOpenCodeSession(t, dbPath, "ses-target", "proj-chatty", "", "Target", 200)
+
+	handler := newOpenCodeSessionsAPIHandler(openCodeSessionsServerConfig{
+		RootDir:       rootDir,
+		ExcludePrefix: "archive",
+		StoragePath:   dbPath,
+		ArchivePrefix: "archive",
+		Token:         "secret-token",
+	})
+
+	body := strings.NewReader(`{"ids":["ses-target"],"status":"paused"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sessions/status", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown status") {
+		t.Fatalf("expected unknown status error, got %q", rec.Body.String())
 	}
 }
 
@@ -816,17 +1009,45 @@ func TestListOpenCodeSessionsDeleteByShortID(t *testing.T) {
 }
 
 func TestShouldSkipSessionTitle(t *testing.T) {
-	if !shouldSkipSessionTitle("archive step 1", "archive") {
-		t.Fatal("expected archive-prefixed title to be skipped")
-	}
-	if !shouldSkipSessionTitle("future: add caching", "archive") {
-		t.Fatal("expected future-prefixed title to be skipped")
-	}
-	if !shouldSkipSessionTitle("Inspect map (@explore subagent)", "archive") {
+	if !shouldSkipSessionTitle("Inspect map (@explore subagent)") {
 		t.Fatal("expected explore-subagent title to be skipped")
 	}
-	if shouldSkipSessionTitle("Regular session title", "archive") {
+	if shouldSkipSessionTitle("Regular session title") {
 		t.Fatal("expected normal title not to be skipped")
+	}
+	if shouldSkipSessionTitle("archive: old task") {
+		t.Fatal("shouldSkipSessionTitle should not skip status-prefixed titles")
+	}
+	if shouldSkipSessionTitle("future: add caching") {
+		t.Fatal("shouldSkipSessionTitle should not skip status-prefixed titles")
+	}
+}
+
+func TestSessionTitleStatus(t *testing.T) {
+	tests := []struct {
+		title  string
+		status string
+	}{
+		{"archive: Done", "archive"},
+		{"archive:Done", "archive"},
+		{"Archive: Done", "archive"},
+		{"future: add caching", "future"},
+		{"Future: stuff", "future"},
+		{"delete: old data", "delete"},
+		{"Delete: old", "delete"},
+		{"Regular session title", ""},
+		{"archive step 1", ""},
+		{"delete me", ""},
+		{"archiving stuff", ""},
+		{"futureproof design", ""},
+		{"deleting things", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := sessionTitleStatus(tt.title)
+		if got != tt.status {
+			t.Errorf("sessionTitleStatus(%q) = %q, want %q", tt.title, got, tt.status)
+		}
 	}
 }
 
