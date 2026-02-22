@@ -22,7 +22,11 @@
       "Bash(./mavu-llm-cli version:*)",
       "Bash(/Users/manfred/Documents/www/mavu-llm-cli/mavu-llm:*)",
       "Bash(make:*)",
-      "Bash(. mvp)"
+      "Bash(. mvp)",
+      "Bash(sqlite3:*)",
+      "Bash(head:*)",
+      "Bash(go build -o /tmp/llm-test . && /tmp/llm-test os 2>&1)",
+      "Bash(/tmp/llm-test os:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

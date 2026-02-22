@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -384,6 +386,35 @@ func TestFindOpenCodeSessionsUsesSessionDirectoryWhenPresent(t *testing.T) {
 	}
 }
 
+func TestFindOpenCodeSessionsEmptyRootReturnsAllSessions(t *testing.T) {
+	parentDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	chattyDir := filepath.Join(parentDir, "chatty")
+	macbookDir := filepath.Join(parentDir, "mavu-macbook")
+	mustMkdirAll(t, chattyDir)
+	mustMkdirAll(t, macbookDir)
+
+	insertOpenCodeProject(t, dbPath, "proj-chatty", chattyDir)
+	insertOpenCodeProject(t, dbPath, "proj-macbook", macbookDir)
+	insertOpenCodeSession(t, dbPath, "ses-chatty", "proj-chatty", "", "Chatty Session", 200)
+	insertOpenCodeSession(t, dbPath, "ses-macbook", "proj-macbook", "", "Macbook Session", 100)
+
+	sessions, err := findOpenCodeSessions("", "", dbPath)
+	if err != nil {
+		t.Fatalf("find sessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	if sessions[0].Project != "chatty" {
+		t.Fatalf("expected project chatty, got %s", sessions[0].Project)
+	}
+	if sessions[1].Project != "mavu-macbook" {
+		t.Fatalf("expected project mavu-macbook, got %s", sessions[1].Project)
+	}
+}
+
 func TestWorktreeExistsFalseForMissingPath(t *testing.T) {
 	if worktreeExists(filepath.Join(t.TempDir(), "does-not-exist")) {
 		t.Fatal("expected missing path to be false")
@@ -609,6 +640,128 @@ func TestReadOpenCodeTUIKeyArchiveIsLowercaseOnly(t *testing.T) {
 	}
 	if key != openCodeTUIKeyNoop {
 		t.Fatalf("expected noop for uppercase A, got %q", key)
+	}
+}
+
+func TestOpenCodeSessionsAPIRequiresBearerToken(t *testing.T) {
+	rootDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	projectDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, projectDir)
+	insertOpenCodeProject(t, dbPath, "proj-chatty", projectDir)
+	insertOpenCodeSession(t, dbPath, "ses-1", "proj-chatty", "", "Session One", 100)
+
+	handler := newOpenCodeSessionsAPIHandler(openCodeSessionsServerConfig{
+		RootDir:       rootDir,
+		ExcludePrefix: "archive",
+		StoragePath:   dbPath,
+		ArchivePrefix: "archive",
+		Token:         "secret-token",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+}
+
+func TestOpenCodeSessionsAPIListCanToggleArchived(t *testing.T) {
+	rootDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	projectDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, projectDir)
+	insertOpenCodeProject(t, dbPath, "proj-chatty", projectDir)
+	insertOpenCodeSession(t, dbPath, "ses-new", "proj-chatty", "", "Session One", 200)
+	insertOpenCodeSession(t, dbPath, "ses-archived", "proj-chatty", "", "archive: Session Two", 100)
+
+	handler := newOpenCodeSessionsAPIHandler(openCodeSessionsServerConfig{
+		RootDir:       rootDir,
+		ExcludePrefix: "archive",
+		StoragePath:   dbPath,
+		ArchivePrefix: "archive",
+		Token:         "secret-token",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var hidden openCodeSessionsListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &hidden); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if hidden.Count != 1 {
+		t.Fatalf("expected 1 visible session with archived hidden, got %d", hidden.Count)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/sessions?include_archived=true", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var shown openCodeSessionsListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &shown); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if shown.Count != 2 {
+		t.Fatalf("expected 2 sessions when archived are shown, got %d", shown.Count)
+	}
+}
+
+func TestOpenCodeSessionsAPIArchiveByIDOnlyTargetsRequestedSession(t *testing.T) {
+	rootDir := t.TempDir()
+	dbPath := createOpenCodeTestDB(t)
+
+	projectDir := filepath.Join(rootDir, "chatty")
+	mustMkdirAll(t, projectDir)
+	insertOpenCodeProject(t, dbPath, "proj-chatty", projectDir)
+	insertOpenCodeSession(t, dbPath, "ses-target", "proj-chatty", "", "Target", 200)
+	insertOpenCodeSession(t, dbPath, "ses-other", "proj-chatty", "", "Other", 100)
+
+	handler := newOpenCodeSessionsAPIHandler(openCodeSessionsServerConfig{
+		RootDir:       rootDir,
+		ExcludePrefix: "archive",
+		StoragePath:   dbPath,
+		ArchivePrefix: "archive",
+		Token:         "secret-token",
+	})
+
+	body := strings.NewReader(`{"ids":["ses-target"]}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sessions/archive", body)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	targetTitle, ok := openCodeSessionTitle(t, dbPath, "ses-target")
+	if !ok {
+		t.Fatal("expected target session to exist")
+	}
+	if !strings.HasPrefix(targetTitle, "archive:") {
+		t.Fatalf("expected target session archived, got %q", targetTitle)
+	}
+
+	otherTitle, ok := openCodeSessionTitle(t, dbPath, "ses-other")
+	if !ok {
+		t.Fatal("expected other session to exist")
+	}
+	if strings.HasPrefix(otherTitle, "archive:") {
+		t.Fatalf("expected other session to remain unchanged, got %q", otherTitle)
 	}
 }
 

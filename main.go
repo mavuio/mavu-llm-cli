@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -45,6 +47,7 @@ const (
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
+	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
 	version                = "0.2.8"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
@@ -149,7 +152,7 @@ func printUsage() {
 	fmt.Printf("  %s init --type <project-type> [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s update [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s template-paths\n", name)
-	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--tui] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
+	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--serve --listen <addr> --token <token>] [--tui] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
 	fmt.Printf("  %s version\n", name)
 	fmt.Println()
 	fmt.Println("Commands:")
@@ -157,13 +160,14 @@ func printUsage() {
 	fmt.Println("  init            Create .codex/AGENTS.md, .claude/CLAUDE.md, and skills directories")
 	fmt.Println("  update          Re-run setup using stored project type")
 	fmt.Println("  template-paths  Show template search paths")
-	fmt.Println("  opencode-sessions (os)  List sessions, batch archive/delete, or open an interactive TUI")
+	fmt.Println("  opencode-sessions (os)  List sessions, batch archive/delete, open an interactive TUI, or run an API server")
 	fmt.Println("  version         Show current version")
 	fmt.Println()
 	fmt.Println("Notes:")
 	fmt.Println("  Top-level skills/commands/snippets apply to codex and claude unless overridden.")
 	fmt.Println("  Use snippets_prepend/snippets_append for tool-specific additions.")
 	fmt.Printf("  Set %s to the template root directory.\n", templatesEnvVar)
+	fmt.Printf("  Set %s for opencode-sessions API authentication.\n", sessionsAPITokenEnvVar)
 }
 
 func printVersion() {
@@ -248,9 +252,13 @@ func listTemplatePaths() error {
 func listOpenCodeSessions(args []string) error {
 	flags := flag.NewFlagSet("opencode-sessions", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
-	pathFlag := flags.String("path", "/www", "Directory containing project folders")
+	pathFlag := flags.String("path", "", "Directory containing project folders (default: all sessions)")
 	excludePrefixFlag := flags.String("exclude-prefix", "archive", "Ignore projects and session titles with this prefix")
 	storagePathFlag := flags.String("storage-path", defaultOpenCodeDBPath(), "OpenCode SQLite database path")
+	serveFlag := flags.Bool("serve", false, "Run OpenCode sessions HTTP API server")
+	listenFlag := flags.String("listen", "127.0.0.1:8787", "Address for --serve mode")
+	tokenDefault := strings.TrimSpace(os.Getenv(sessionsAPITokenEnvVar))
+	tokenFlag := flags.String("token", tokenDefault, fmt.Sprintf("Bearer token for --serve mode (defaults to %s)", sessionsAPITokenEnvVar))
 	tuiFlag := flags.Bool("tui", false, "Open interactive session list (j/k or arrows move, a archive, d delete, v toggle archived)")
 	archiveFlag := flags.Bool("archive", false, "Archive matching sessions by prefixing title")
 	archivePrefixFlag := flags.String("archive-prefix", "archive", "Prefix used when archiving session titles")
@@ -261,9 +269,6 @@ func listOpenCodeSessions(args []string) error {
 	}
 
 	rootDir := strings.TrimSpace(*pathFlag)
-	if rootDir == "" {
-		return errors.New("path cannot be empty")
-	}
 	excludePrefix := strings.TrimSpace(*excludePrefixFlag)
 	storagePath := strings.TrimSpace(*storagePathFlag)
 	if storagePath == "" {
@@ -276,11 +281,28 @@ func listOpenCodeSessions(args []string) error {
 	if *archiveFlag && *deleteFlag {
 		return errors.New("--archive and --delete cannot be used together")
 	}
+	if *serveFlag && (*tuiFlag || *archiveFlag || *deleteFlag || *yesFlag) {
+		return errors.New("--serve cannot be combined with --tui, --archive, --delete, or --yes")
+	}
 	if *tuiFlag && (*archiveFlag || *deleteFlag || *yesFlag) {
 		return errors.New("--tui cannot be combined with --archive, --delete, or --yes")
 	}
 	mutatingMode := *archiveFlag || *deleteFlag
 	outputFilter := strings.ToLower(strings.TrimSpace(strings.Join(flags.Args(), " ")))
+	if *serveFlag {
+		if outputFilter != "" {
+			return errors.New("filter is not supported with --serve")
+		}
+		cfg := openCodeSessionsServerConfig{
+			RootDir:       rootDir,
+			ExcludePrefix: excludePrefix,
+			StoragePath:   storagePath,
+			ArchivePrefix: archivePrefix,
+			ListenAddr:    strings.TrimSpace(*listenFlag),
+			Token:         strings.TrimSpace(*tokenFlag),
+		}
+		return serveOpenCodeSessionsAPI(cfg)
+	}
 	if mutatingMode && outputFilter == "" {
 		return errors.New("filter is required when using --archive or --delete")
 	}
@@ -309,7 +331,7 @@ func listOpenCodeSessions(args []string) error {
 			assignSessionShortIDs(tuiSessions)
 		}
 		if len(tuiSessions) == 0 {
-			fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
+			fmt.Printf("No OpenCode sessions found in %s\n", sessionScopeLabel(rootDir))
 			return nil
 		}
 
@@ -327,18 +349,18 @@ func listOpenCodeSessions(args []string) error {
 
 	if len(sessions) == 0 {
 		if excludePrefix == "" {
-			fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
+			fmt.Printf("No OpenCode sessions found in %s\n", sessionScopeLabel(rootDir))
 			return nil
 		}
-		fmt.Printf("No OpenCode sessions found in %s/* excluding %s*\n", rootDir, excludePrefix)
+		fmt.Printf("No OpenCode sessions found in %s excluding %s*\n", sessionScopeLabel(rootDir), excludePrefix)
 		return nil
 	}
 
 	if !mutatingMode {
 		if excludePrefix == "" {
-			fmt.Printf("OpenCode sessions in %s/*:\n", rootDir)
+			fmt.Printf("OpenCode sessions in %s:\n", sessionScopeLabel(rootDir))
 		} else {
-			fmt.Printf("OpenCode sessions in %s/* excluding %s*:\n", rootDir, excludePrefix)
+			fmt.Printf("OpenCode sessions in %s excluding %s*:\n", sessionScopeLabel(rootDir), excludePrefix)
 		}
 		for _, session := range matchedSessions {
 			title := sessionDisplayTitle(session)
@@ -350,16 +372,16 @@ func listOpenCodeSessions(args []string) error {
 		if len(matchedSessions) == 0 {
 			if outputFilter == "" {
 				if excludePrefix == "" {
-					fmt.Printf("No OpenCode sessions found in %s/*\n", rootDir)
+					fmt.Printf("No OpenCode sessions found in %s\n", sessionScopeLabel(rootDir))
 				} else {
-					fmt.Printf("No OpenCode sessions found in %s/* excluding %s*\n", rootDir, excludePrefix)
+					fmt.Printf("No OpenCode sessions found in %s excluding %s*\n", sessionScopeLabel(rootDir), excludePrefix)
 				}
 				return nil
 			}
 			if excludePrefix == "" {
-				fmt.Printf("No OpenCode sessions found in %s/* matching %q\n", rootDir, outputFilter)
+				fmt.Printf("No OpenCode sessions found in %s matching %q\n", sessionScopeLabel(rootDir), outputFilter)
 			} else {
-				fmt.Printf("No OpenCode sessions found in %s/* excluding %s* matching %q\n", rootDir, excludePrefix, outputFilter)
+				fmt.Printf("No OpenCode sessions found in %s excluding %s* matching %q\n", sessionScopeLabel(rootDir), excludePrefix, outputFilter)
 			}
 		}
 		return nil
@@ -367,9 +389,9 @@ func listOpenCodeSessions(args []string) error {
 
 	if len(matchedSessions) == 0 {
 		if excludePrefix == "" {
-			fmt.Printf("No OpenCode sessions found in %s/* matching %q\n", rootDir, outputFilter)
+			fmt.Printf("No OpenCode sessions found in %s matching %q\n", sessionScopeLabel(rootDir), outputFilter)
 		} else {
-			fmt.Printf("No OpenCode sessions found in %s/* excluding %s* matching %q\n", rootDir, excludePrefix, outputFilter)
+			fmt.Printf("No OpenCode sessions found in %s excluding %s* matching %q\n", sessionScopeLabel(rootDir), excludePrefix, outputFilter)
 		}
 		return nil
 	}
@@ -424,6 +446,383 @@ type openCodeSession struct {
 	} `json:"time"`
 }
 
+type openCodeSessionsServerConfig struct {
+	RootDir       string
+	ExcludePrefix string
+	StoragePath   string
+	ArchivePrefix string
+	ListenAddr    string
+	Token         string
+}
+
+type openCodeSessionAPIItem struct {
+	ID             string `json:"id"`
+	ShortID        string `json:"short_id"`
+	Title          string `json:"title"`
+	Project        string `json:"project"`
+	ProjectPath    string `json:"project_path"`
+	UpdatedMillis  int64  `json:"updated_millis"`
+	UpdatedDisplay string `json:"updated_display"`
+}
+
+type openCodeSessionsListResponse struct {
+	Sessions        []openCodeSessionAPIItem `json:"sessions"`
+	Count           int                      `json:"count"`
+	IncludeArchived bool                     `json:"include_archived"`
+	Filter          string                   `json:"filter"`
+}
+
+type openCodeSessionsMutationRequest struct {
+	IDs           []string `json:"ids"`
+	ShortIDs      []string `json:"short_ids"`
+	ArchivePrefix string   `json:"archive_prefix"`
+}
+
+type openCodeSessionsMutationResponse struct {
+	Action       string   `json:"action"`
+	Affected     int      `json:"affected"`
+	Skipped      int      `json:"skipped,omitempty"`
+	SessionIDs   []string `json:"session_ids"`
+	SessionShort []string `json:"session_short_ids"`
+}
+
+func serveOpenCodeSessionsAPI(cfg openCodeSessionsServerConfig) error {
+	if strings.TrimSpace(cfg.RootDir) == "" {
+		return errors.New("path cannot be empty")
+	}
+	if strings.TrimSpace(cfg.StoragePath) == "" {
+		return errors.New("storage-path cannot be empty")
+	}
+	if strings.TrimSpace(cfg.ListenAddr) == "" {
+		return errors.New("listen cannot be empty when using --serve")
+	}
+	if strings.TrimSpace(cfg.Token) == "" {
+		return fmt.Errorf("token cannot be empty when using --serve (set --token or %s)", sessionsAPITokenEnvVar)
+	}
+
+	handler := newOpenCodeSessionsAPIHandler(cfg)
+	server := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	fmt.Printf("OpenCode sessions API listening on http://%s\n", cfg.ListenAddr)
+	fmt.Println("Use Authorization: Bearer <token> for /sessions endpoints.")
+	err := server.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func newOpenCodeSessionsAPIHandler(cfg openCodeSessionsServerConfig) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeOpenCodeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		writeOpenCodeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/sessions", openCodeSessionsAuth(cfg.Token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeOpenCodeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		filter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("filter")))
+		includeArchived := parseBoolQueryParam(r, "include_archived")
+		excludePrefix := strings.TrimSpace(r.URL.Query().Get("exclude_prefix"))
+		if excludePrefix == "" {
+			excludePrefix = cfg.ExcludePrefix
+		}
+
+		sessions, err := findOpenCodeSessions(cfg.RootDir, "", cfg.StoragePath)
+		if err != nil {
+			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		assignSessionShortIDs(sessions)
+
+		now := time.Now()
+		visible := filterOpenCodeSessionsForTUI(sessions, now, filter, strings.ToLower(excludePrefix), includeArchived)
+		items := make([]openCodeSessionAPIItem, 0, len(visible))
+		for _, session := range visible {
+			items = append(items, openCodeSessionAPIItem{
+				ID:             session.ID,
+				ShortID:        session.ShortID,
+				Title:          sessionDisplayTitle(session),
+				Project:        session.Project,
+				ProjectPath:    session.ProjectPath,
+				UpdatedMillis:  session.Time.Updated,
+				UpdatedDisplay: formatSessionUpdatedAt(session.Time.Updated, now),
+			})
+		}
+
+		writeOpenCodeJSON(w, http.StatusOK, openCodeSessionsListResponse{
+			Sessions:        items,
+			Count:           len(items),
+			IncludeArchived: includeArchived,
+			Filter:          filter,
+		})
+	}))
+
+	mux.HandleFunc("/sessions/archive", openCodeSessionsAuth(cfg.Token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeOpenCodeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		var req openCodeSessionsMutationRequest
+		if err := decodeOpenCodeJSONBody(r, &req); err != nil {
+			writeOpenCodeAPIError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		targets, missingIDs, missingShortIDs, err := loadMutationSessions(cfg, req.IDs, req.ShortIDs)
+		if err != nil {
+			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(missingIDs) > 0 || len(missingShortIDs) > 0 {
+			writeOpenCodeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":             "some requested sessions were not found",
+				"missing_ids":       missingIDs,
+				"missing_short_ids": missingShortIDs,
+			})
+			return
+		}
+		if len(targets) == 0 {
+			writeOpenCodeAPIError(w, http.StatusBadRequest, "request must include at least one id or short_id")
+			return
+		}
+
+		prefix := strings.TrimSpace(req.ArchivePrefix)
+		if prefix == "" {
+			prefix = cfg.ArchivePrefix
+		}
+		affected, skipped, err := archiveOpenCodeSessions(cfg.StoragePath, targets, prefix)
+		if err != nil {
+			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeOpenCodeJSON(w, http.StatusOK, buildMutationResponse("archive", targets, affected, skipped))
+	}))
+
+	mux.HandleFunc("/sessions/delete", openCodeSessionsAuth(cfg.Token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeOpenCodeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		var req openCodeSessionsMutationRequest
+		if err := decodeOpenCodeJSONBody(r, &req); err != nil {
+			writeOpenCodeAPIError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		targets, missingIDs, missingShortIDs, err := loadMutationSessions(cfg, req.IDs, req.ShortIDs)
+		if err != nil {
+			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(missingIDs) > 0 || len(missingShortIDs) > 0 {
+			writeOpenCodeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":             "some requested sessions were not found",
+				"missing_ids":       missingIDs,
+				"missing_short_ids": missingShortIDs,
+			})
+			return
+		}
+		if len(targets) == 0 {
+			writeOpenCodeAPIError(w, http.StatusBadRequest, "request must include at least one id or short_id")
+			return
+		}
+
+		affected, err := deleteOpenCodeSessions(cfg.StoragePath, targets)
+		if err != nil {
+			writeOpenCodeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeOpenCodeJSON(w, http.StatusOK, buildMutationResponse("delete", targets, affected, 0))
+	}))
+
+	return mux
+}
+
+func openCodeSessionsAuth(token string, next http.HandlerFunc) http.HandlerFunc {
+	expected := strings.TrimSpace(token)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !hasOpenCodeBearerToken(r, expected) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeOpenCodeAPIError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func hasOpenCodeBearerToken(r *http.Request, expectedToken string) bool {
+	if strings.TrimSpace(expectedToken) == "" {
+		return false
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(auth) < len("Bearer ") || !strings.EqualFold(auth[:len("Bearer ")], "Bearer ") {
+		return false
+	}
+	providedToken := strings.TrimSpace(auth[len("Bearer "):])
+	if len(providedToken) != len(expectedToken) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(providedToken), []byte(expectedToken)) == 1
+}
+
+func parseBoolQueryParam(r *http.Request, key string) bool {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return parsed
+}
+
+func decodeOpenCodeJSONBody(r *http.Request, target any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("invalid json body: %w", err)
+	}
+	if decoder.More() {
+		return errors.New("invalid json body: multiple values")
+	}
+	return nil
+}
+
+func loadMutationSessions(cfg openCodeSessionsServerConfig, ids, shortIDs []string) ([]openCodeSession, []string, []string, error) {
+	sessions, err := findOpenCodeSessions(cfg.RootDir, "", cfg.StoragePath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	assignSessionShortIDs(sessions)
+	return selectOpenCodeSessionsByIdentifiers(sessions, ids, shortIDs), missingSessionIDs(sessions, ids), missingSessionShortIDs(sessions, shortIDs), nil
+}
+
+func selectOpenCodeSessionsByIdentifiers(sessions []openCodeSession, ids, shortIDs []string) []openCodeSession {
+	byID := make(map[string]openCodeSession, len(sessions))
+	byShortID := make(map[string]openCodeSession, len(sessions))
+	for _, session := range sessions {
+		byID[session.ID] = session
+		if strings.TrimSpace(session.ShortID) != "" {
+			byShortID[session.ShortID] = session
+		}
+	}
+
+	selected := make([]openCodeSession, 0, len(ids)+len(shortIDs))
+	seen := make(map[string]bool, len(ids)+len(shortIDs))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		session, ok := byID[trimmed]
+		if !ok || seen[session.ID] {
+			continue
+		}
+		selected = append(selected, session)
+		seen[session.ID] = true
+	}
+	for _, shortID := range shortIDs {
+		trimmed := strings.TrimSpace(shortID)
+		if trimmed == "" {
+			continue
+		}
+		session, ok := byShortID[trimmed]
+		if !ok || seen[session.ID] {
+			continue
+		}
+		selected = append(selected, session)
+		seen[session.ID] = true
+	}
+	return selected
+}
+
+func missingSessionIDs(sessions []openCodeSession, ids []string) []string {
+	existing := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		existing[session.ID] = true
+	}
+	missing := make([]string, 0)
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		if !existing[trimmed] {
+			missing = append(missing, trimmed)
+		}
+	}
+	return missing
+}
+
+func missingSessionShortIDs(sessions []openCodeSession, shortIDs []string) []string {
+	existing := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		trimmed := strings.TrimSpace(session.ShortID)
+		if trimmed != "" {
+			existing[trimmed] = true
+		}
+	}
+	missing := make([]string, 0)
+	seen := make(map[string]bool, len(shortIDs))
+	for _, shortID := range shortIDs {
+		trimmed := strings.TrimSpace(shortID)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		if !existing[trimmed] {
+			missing = append(missing, trimmed)
+		}
+	}
+	return missing
+}
+
+func buildMutationResponse(action string, sessions []openCodeSession, affected, skipped int) openCodeSessionsMutationResponse {
+	ids := make([]string, 0, len(sessions))
+	shortIDs := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, session.ID)
+		if strings.TrimSpace(session.ShortID) != "" {
+			shortIDs = append(shortIDs, session.ShortID)
+		}
+	}
+	return openCodeSessionsMutationResponse{
+		Action:       action,
+		Affected:     affected,
+		Skipped:      skipped,
+		SessionIDs:   ids,
+		SessionShort: shortIDs,
+	}
+}
+
+func writeOpenCodeAPIError(w http.ResponseWriter, status int, message string) {
+	writeOpenCodeJSON(w, status, map[string]any{"error": message})
+}
+
+func writeOpenCodeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
 func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCodeSession, error) {
 	db, err := openOpenCodeDB(storagePath)
 	if err != nil {
@@ -434,9 +833,13 @@ func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCod
 	}
 	defer db.Close()
 
-	candidates, err := rootCandidates(rootDir)
-	if err != nil {
-		return nil, err
+	filterByRoot := strings.TrimSpace(rootDir) != ""
+	var candidates []string
+	if filterByRoot {
+		candidates, err = rootCandidates(rootDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 	prefix := strings.ToLower(strings.TrimSpace(excludePrefix))
 
@@ -467,9 +870,18 @@ func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCod
 		}
 
 		root := strings.TrimSpace(sessionRoot.String)
-		projectName, ok := sessionProjectName(root, candidates)
-		if !ok {
-			continue
+		var projectName string
+		if filterByRoot {
+			name, ok := sessionProjectName(root, candidates)
+			if !ok {
+				continue
+			}
+			projectName = name
+		} else {
+			if root == "" {
+				continue
+			}
+			projectName = filepath.Base(root)
 		}
 		if !worktreeExists(root) {
 			continue
@@ -511,6 +923,13 @@ func findOpenCodeSessions(rootDir, excludePrefix, storagePath string) ([]openCod
 		return filtered[i].Time.Updated > filtered[j].Time.Updated
 	})
 	return filtered, nil
+}
+
+func sessionScopeLabel(rootDir string) string {
+	if strings.TrimSpace(rootDir) == "" {
+		return "all projects"
+	}
+	return rootDir + "/*"
 }
 
 func sessionDisplayTitle(session openCodeSession) string {
