@@ -48,7 +48,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.9"
+	version                = "0.2.10"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -2063,7 +2063,7 @@ func runUsageRulesSync(rootDir string) error {
 		return err
 	}
 
-	args := []string{"usage_rules.sync", usageRulesOutputPath, "--all", "--link-to-folder", "deps", "--yes"}
+	args := []string{"usage_rules.sync", "--yes"}
 	fmt.Printf("Running: mix %s\n", strings.Join(args, " "))
 	cmd := exec.Command("mix", args...)
 	cmd.Dir = rootDir
