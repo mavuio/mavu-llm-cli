@@ -152,7 +152,7 @@ func printUsage() {
 	fmt.Printf("  %s init --type <project-type> [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s update [--path <dir>] [--verbose]\n", name)
 	fmt.Printf("  %s template-paths\n", name)
-	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--serve --listen <addr> --token <token>] [--tui] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
+	fmt.Printf("  %s opencode-sessions|os [--path <dir>] [--exclude-prefix <prefix>] [--storage-path <opencode.db>] [--serve --listen <addr> --token <token>] [--cli] [--archive|--delete] [--archive-prefix <prefix>] [--yes] [filter]\n", name)
 	fmt.Printf("  %s version\n", name)
 	fmt.Println()
 	fmt.Println("Commands:")
@@ -259,7 +259,7 @@ func listOpenCodeSessions(args []string) error {
 	listenFlag := flags.String("listen", "192.168.102.10:8787", "Address for --serve mode")
 	tokenDefault := strings.TrimSpace(os.Getenv(sessionsAPITokenEnvVar))
 	tokenFlag := flags.String("token", tokenDefault, fmt.Sprintf("Bearer token for --serve mode (defaults to %s)", sessionsAPITokenEnvVar))
-	tuiFlag := flags.Bool("tui", false, "Open interactive session list (j/k or arrows move, a archive, d delete, 0-3 toggle status, q quit)")
+	cliFlag := flags.Bool("cli", false, "Print session list to stdout instead of opening the interactive TUI")
 	archiveFlag := flags.Bool("archive", false, "Archive matching sessions by prefixing title")
 	archivePrefixFlag := flags.String("archive-prefix", "archive", "Prefix used when archiving session titles")
 	deleteFlag := flags.Bool("delete", false, "Delete matching sessions from OpenCode database")
@@ -281,13 +281,11 @@ func listOpenCodeSessions(args []string) error {
 	if *archiveFlag && *deleteFlag {
 		return errors.New("--archive and --delete cannot be used together")
 	}
-	if *serveFlag && (*tuiFlag || *archiveFlag || *deleteFlag || *yesFlag) {
-		return errors.New("--serve cannot be combined with --tui, --archive, --delete, or --yes")
-	}
-	if *tuiFlag && (*archiveFlag || *deleteFlag || *yesFlag) {
-		return errors.New("--tui cannot be combined with --archive, --delete, or --yes")
+	if *serveFlag && (*cliFlag || *archiveFlag || *deleteFlag || *yesFlag) {
+		return errors.New("--serve cannot be combined with --cli, --archive, --delete, or --yes")
 	}
 	mutatingMode := *archiveFlag || *deleteFlag
+	useTUI := !*cliFlag && !*serveFlag && !mutatingMode
 	outputFilter := strings.ToLower(strings.TrimSpace(strings.Join(flags.Args(), " ")))
 	if *serveFlag {
 		if outputFilter != "" {
@@ -321,7 +319,7 @@ func listOpenCodeSessions(args []string) error {
 		}
 	}
 
-	if *tuiFlag {
+	if useTUI {
 		tuiSessions, err := findOpenCodeSessions(rootDir, "", storagePath, false)
 		if err != nil {
 			return err

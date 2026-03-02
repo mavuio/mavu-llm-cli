@@ -26,7 +26,8 @@
       "Bash(sqlite3:*)",
       "Bash(head:*)",
       "Bash(go build -o /tmp/llm-test . && /tmp/llm-test os 2>&1)",
-      "Bash(/tmp/llm-test os:*)"
+      "Bash(/tmp/llm-test os:*)",
+      "Bash(gofmt:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

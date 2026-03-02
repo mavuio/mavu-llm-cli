@@ -434,7 +434,7 @@ func TestListOpenCodeSessionsPrintsSessionTitles(t *testing.T) {
 
 	var runErr error
 	output := captureOutput(t, func() {
-		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath})
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--cli"})
 	})
 	if runErr != nil {
 		t.Fatalf("list opencode sessions: %v", runErr)
@@ -481,7 +481,7 @@ func TestListOpenCodeSessionsAppliesLineFilter(t *testing.T) {
 
 	var runErr error
 	output := captureOutput(t, func() {
-		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "filmarchiv-ex:"})
+		runErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--cli", "filmarchiv-ex:"})
 	})
 	if runErr != nil {
 		t.Fatalf("list opencode sessions: %v", runErr)
@@ -567,19 +567,6 @@ func TestListOpenCodeSessionsMutatingModeRequiresFilter(t *testing.T) {
 		t.Fatal("expected error when mutating without filter")
 	}
 	if !strings.Contains(err.Error(), "filter is required") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestListOpenCodeSessionsTUIRejectsMutatingFlags(t *testing.T) {
-	rootDir := t.TempDir()
-	dbPath := createOpenCodeTestDB(t)
-
-	err := listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--tui", "--archive", "chatty"})
-	if err == nil {
-		t.Fatal("expected error when combining --tui with mutating flags")
-	}
-	if !strings.Contains(err.Error(), "cannot be combined") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -971,7 +958,7 @@ func TestListOpenCodeSessionsDeleteByShortID(t *testing.T) {
 
 	var listErr error
 	listOutput := captureOutput(t, func() {
-		listErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath})
+		listErr = listOpenCodeSessions([]string{"--path", rootDir, "--storage-path", dbPath, "--cli"})
 	})
 	if listErr != nil {
 		t.Fatalf("list opencode sessions: %v", listErr)
