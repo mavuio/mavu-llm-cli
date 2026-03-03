@@ -48,7 +48,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.10"
+	version                = "0.2.11"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -1114,6 +1114,9 @@ func sessionMatchesFilter(session openCodeSession, now time.Time, outputFilter s
 		return true
 	}
 	line := strings.ToLower(sessionListLine(session, now))
+	if status := sessionTitleStatus(session.Title); status != "" {
+		line += " #" + status
+	}
 	return strings.Contains(line, outputFilter)
 }
 
@@ -1260,7 +1263,7 @@ func sessionTitleWithStatus(session openCodeSession, status string) (string, boo
 
 func sessionBaseTitle(title string) string {
 	trimmed := strings.TrimSpace(title)
-	status := sessionTitleStatus(trimmed)
+	status := sessionTitlePrefixedStatus(trimmed)
 	if status == "" {
 		return trimmed
 	}
@@ -1690,6 +1693,13 @@ func shouldSkipSessionTitle(title string) bool {
 }
 
 func sessionTitleStatus(title string) string {
+	if status := sessionTitlePrefixedStatus(title); status != "" {
+		return status
+	}
+	return sessionTitleHashtagStatus(title)
+}
+
+func sessionTitlePrefixedStatus(title string) string {
 	lowerTitle := strings.ToLower(strings.TrimSpace(title))
 	for _, s := range knownSessionStatuses {
 		if strings.HasPrefix(lowerTitle, s.Name+":") {
@@ -1697,6 +1707,35 @@ func sessionTitleStatus(title string) string {
 		}
 	}
 	return ""
+}
+
+func sessionTitleHashtagStatus(title string) string {
+	lowerTitle := strings.ToLower(strings.TrimSpace(title))
+	if lowerTitle == "" {
+		return ""
+	}
+	for _, s := range knownSessionStatuses {
+		needle := "#" + s.Name
+		start := strings.Index(lowerTitle, needle)
+		for start != -1 {
+			end := start + len(needle)
+			beforeOK := start == 0 || !isSessionHashtagChar(lowerTitle[start-1])
+			afterOK := end == len(lowerTitle) || !isSessionHashtagChar(lowerTitle[end])
+			if beforeOK && afterOK {
+				return s.Name
+			}
+			next := strings.Index(lowerTitle[start+1:], needle)
+			if next == -1 {
+				break
+			}
+			start += next + 1
+		}
+	}
+	return ""
+}
+
+func isSessionHashtagChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'
 }
 
 func sessionStatusOrActive(title string) string {

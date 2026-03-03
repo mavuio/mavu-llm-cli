@@ -615,6 +615,15 @@ func TestSessionVisibleInTUIStatusToggle(t *testing.T) {
 		t.Fatal("expected future session to be shown when toggled on")
 	}
 
+	hashtagArchive := openCodeSession{ID: "ses-6", Title: "Sort old notes #archive", Project: "chatty", ShortID: "pqr678"}
+	hashtagArchive.Time.Updated = now.UnixMilli()
+	if sessionVisibleInTUI(hashtagArchive, now, "", hidden) {
+		t.Fatal("expected #archive session to be hidden by default")
+	}
+	if !sessionVisibleInTUI(hashtagArchive, now, "", shown) {
+		t.Fatal("expected #archive session to be shown when archive is toggled on")
+	}
+
 	del := openCodeSession{ID: "ses-4", Title: "delete: old stuff", Project: "chatty", ShortID: "jkl012"}
 	del.Time.Updated = now.UnixMilli()
 	if sessionVisibleInTUI(del, now, "", hidden) {
@@ -1022,9 +1031,16 @@ func TestSessionTitleStatus(t *testing.T) {
 		{"Future: stuff", "future"},
 		{"delete: old data", "delete"},
 		{"Delete: old", "delete"},
+		{"Sort old notes #archive", "archive"},
+		{"Sort old notes (#archive)", "archive"},
+		{"Plan cache #future", "future"},
+		{"Cleanup #delete, maybe", "delete"},
 		{"Regular session title", ""},
 		{"archive step 1", ""},
 		{"delete me", ""},
+		{"note#archive", ""},
+		{"Keep #archived notes", ""},
+		{"Plan #future-proof flow", ""},
 		{"archiving stuff", ""},
 		{"futureproof design", ""},
 		{"deleting things", ""},
@@ -1035,6 +1051,30 @@ func TestSessionTitleStatus(t *testing.T) {
 		if got != tt.status {
 			t.Errorf("sessionTitleStatus(%q) = %q, want %q", tt.title, got, tt.status)
 		}
+	}
+}
+
+func TestSessionBaseTitleKeepsHashtagStatus(t *testing.T) {
+	if got := sessionBaseTitle("archive: done"); got != "done" {
+		t.Fatalf("expected prefixed title to unwrap, got %q", got)
+	}
+	if got := sessionBaseTitle("Sort old notes #archive"); got != "Sort old notes #archive" {
+		t.Fatalf("expected hashtag title to stay unchanged, got %q", got)
+	}
+}
+
+func TestSessionMatchesFilterSupportsStatusHashtags(t *testing.T) {
+	now := time.Now()
+	archived := openCodeSession{ID: "ses-1", Title: "archive: done", Project: "chatty", ShortID: "abc1"}
+	archived.Time.Updated = now.UnixMilli()
+	if !sessionMatchesFilter(archived, now, "#archive") {
+		t.Fatal("expected #archive filter to match archive-prefixed session")
+	}
+
+	future := openCodeSession{ID: "ses-2", Title: "Plan rollout #future", Project: "chatty", ShortID: "abc2"}
+	future.Time.Updated = now.UnixMilli()
+	if !sessionMatchesFilter(future, now, "#future") {
+		t.Fatal("expected #future filter to match hashtag status session")
 	}
 }
 
