@@ -48,7 +48,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.11"
+	version                = "0.2.12"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -2140,7 +2140,7 @@ func appendUsageRules(rootDir string) error {
 
 	targets := []string{
 		filepath.Join(rootDir, ".claude", claudeFilename),
-		filepath.Join(rootDir, ".codex", agentsFilename),
+		filepath.Join(rootDir, agentsFilename),
 	}
 	for _, target := range targets {
 		if err := appendWithSeparator(target, rules); err != nil {
@@ -3332,19 +3332,19 @@ func writeRootDocs(rootDir, templateRoot string, codexConfig, claudeConfig Resol
 		return err
 	}
 
-	rootAgentsPath := filepath.Join(rootDir, agentsFilename)
-	if _, err := os.Stat(rootAgentsPath); err == nil {
-		fmt.Printf("Warning: %s already exists and will not be modified.\n", rootAgentsPath)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	agentsPath := filepath.Join(rootDir, ".codex", agentsFilename)
-	if err := os.MkdirAll(filepath.Dir(agentsPath), defaultDirPermission); err != nil {
-		return err
+	agentsPath := filepath.Join(rootDir, agentsFilename)
+	agentsProjectPath := filepath.Join(rootDir, "AGENTS.project.md")
+	if projectContent, err := os.ReadFile(agentsProjectPath); err == nil {
+		codexContent = strings.TrimSpace(string(projectContent)) + "\n\n" + codexContent
 	}
 	if err := writeFile(agentsPath, []byte(codexContent)); err != nil {
 		return err
+	}
+
+	// Remove legacy .codex/AGENTS.md
+	legacyAgentsPath := filepath.Join(rootDir, ".codex", agentsFilename)
+	if err := os.Remove(legacyAgentsPath); err == nil {
+		fmt.Printf("Removed legacy %s\n", legacyAgentsPath)
 	}
 
 	claudePath := filepath.Join(rootDir, ".claude", claudeFilename)

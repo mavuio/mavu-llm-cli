@@ -1,7 +1,7 @@
 name = "PHP Silverstripe"
 description = "Silverstripe CMS project"
-skills = ["beans"]
+skills = []
 commands = ["teach"]
 mcps = ["demo"]
 
-snippets = ["beans_usage"]
+snippets = []

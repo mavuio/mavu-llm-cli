@@ -24,7 +24,7 @@ Export modified bit components to bit.mavu.io.
 3. Generate clean, shareable Bit diffs for review:
    - Create a clean diff folder (no ANSI color codes):
      ```bash
-     mkdir -p /tmp/bit-diffs-clean
+         rm -rf /tmp/bit-diffs-clean && mkdir -p /tmp/bit-diffs-clean                           
      ```
    - For each modified component, write `bit diff` output to a file and strip ANSI codes:
      ```bash

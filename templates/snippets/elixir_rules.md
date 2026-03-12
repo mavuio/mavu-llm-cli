@@ -3,11 +3,14 @@ This is a web application written using the Phoenix web framework.
 ## CODE RELOADING RULES
 - **after you modify a *.ex file:** you have to recompile it with MavuCodeReloader.do_reload_file(file_path)
 
-## TIDEWAVE MCP RULES
-if tidewave mcp is unreachable:
-check its status with iex "MavuHealth.TidewaveHealth.report()",
-and  ask me to restart it, dont use iex instead of tidewave for
-anything other than the healthcheck above
+## PROJECT EVAL
+
+For evaluating code in the context of the Phoenix project always exclusively use the tidewave MCP Server It should already have been comfortably configured in the environment.
+
+It  runs on the same port as the dev-server itself, as it is part of it.
+
+if tidewave mcp is unreachable,
+ask me to restart it, never use iex or mix instead of tidewave 
 
 ## ENVIRONMENT VARIABLES RULES
 

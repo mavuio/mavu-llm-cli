@@ -47,7 +47,7 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 	assertFileExists(t, filepath.Join(rootDir, mavuDirName, localConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, opencodeConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, mcpConfigFilename))
-	assertFileExists(t, filepath.Join(rootDir, ".codex", agentsFilename))
+	assertFileExists(t, filepath.Join(rootDir, agentsFilename))
 	assertFileExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
 	assertFileExists(t, filepath.Join(rootDir, ".claude", claudeFilename))
 	assertDirExists(t, filepath.Join(rootDir, ".codex", "skills", "beans"))
