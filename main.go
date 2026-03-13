@@ -48,7 +48,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.12"
+	version                = "0.2.13"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -2711,11 +2711,16 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 			path:   filepath.Join(rootDir, ".claude", "skills"),
 			skills: mergeSkills(claudeConfig.Skills, localSkills),
 		},
+		{
+			label:  "agents",
+			path:   filepath.Join(rootDir, ".agents", "skills"),
+			skills: mergeSkills(claudeConfig.Skills, localSkills),
+		},
 	}
 
 	for _, target := range targets {
 		if len(target.skills) == 0 {
-			return fmt.Errorf("project type has no skills configured for %s", target.label)
+			continue
 		}
 		desiredSkills := make(map[string]struct{}, len(target.skills))
 		for _, skill := range target.skills {

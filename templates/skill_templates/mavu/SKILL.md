@@ -7,6 +7,16 @@ description: Tools and conventions for general tooling in a mavu-style phoenix c
 
 Use this skill when you need to recognize or apply Mavu-specific conventions. Examples below are pulled from the current codebase.
 
+## Reference codebase
+
+When creating new code, **always** look for existing patterns in the reference codebase at `/www/mavu_codesamples/samples` first. Search for similar implementations, naming conventions, and structural patterns before writing new code from scratch.
+
+## `lib/_mavubit/` — shared reusable libraries
+
+`lib/_mavubit/` contains reusable libraries managed by [bit.dev](https://bit.dev) (a component management solution similar to Git subtree but more convenient). These components are shared across all mavu projects.
+
+You **may** modify files in `lib/_mavubit/`, but changes **must** be generic and valuable for all projects using these components — not project-specific. When in doubt, ask whether the change should live in `_mavubit` or in the project's own code.
+
 ## When to use this skill
 
 - Adding or updating Mavu resources/tools that should follow established patterns

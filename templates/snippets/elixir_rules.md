@@ -2,15 +2,26 @@ This is a web application written using the Phoenix web framework.
 
 ## CODE RELOADING RULES
 - **after you modify a *.ex file:** you have to recompile it with MavuCodeReloader.do_reload_file(file_path)
+it shows you if the file compiled successfully
 
+
+## MCP TOOL RULES
+
+**Tidewave:** Always use the `mcp_call` tool directly for Tidewave. Do **not** use `mcporter call`, `mcp_servers`, or `mcp_discover` for Tidewave — they have known issues with its schema. The `mcp_call` tool works reliably , also `mcporter list`
+
+**Other MCP servers:** If the harness provides an `mcp_call` tool, prefer calling via `mcporter call` in bash. `mcporter call` is more reliable for non-Tidewave servers. If no `mcp_call` tool exists in the harness, this rule does not apply.
 ## PROJECT EVAL
 
-For evaluating code in the context of the Phoenix project always exclusively use the tidewave MCP Server It should already have been comfortably configured in the environment.
+For evaluating code in the context of the Phoenix project always exclusively use the tidewave MCP Server. It should already have been comfortably configured in the environment.
 
-It  runs on the same port as the dev-server itself, as it is part of it.
+It runs on the same port as the dev-server itself, as it is part of it.
 
-if tidewave mcp is unreachable,
-ask me to restart it, never use iex or mix instead of tidewave 
+Never shell out to `iex`, `mix run`, or `elixir -e` for        
+ runtime inspection. These start a separate BEAM node that cannot 
+ see the running application state — live processes, GenServers,  
+ ETS tables, PubSub, and supervision trees are all invisible.     
+ Tidewave evaluates inside the running dev server, which is the   
+ only context where live data exists. 
 
 ## ENVIRONMENT VARIABLES RULES
 
