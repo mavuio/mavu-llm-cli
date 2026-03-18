@@ -47,6 +47,7 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 	assertFileExists(t, filepath.Join(rootDir, mavuDirName, localConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, opencodeConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, mcpConfigFilename))
+	assertFileExists(t, filepath.Join(rootDir, gsdDirName, "mcp.json"))
 	assertFileExists(t, filepath.Join(rootDir, agentsFilename))
 	assertFileExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
 	assertFileExists(t, filepath.Join(rootDir, ".claude", claudeFilename))
@@ -183,6 +184,18 @@ mcps = ["demo"]
 	}
 	if _, ok := mcpCfg.McpServers["tidewave"]; !ok {
 		t.Fatalf("expected tidewave in mcp config")
+	}
+
+	var gsdMcpCfg mcpConfig
+	loadJSON(t, filepath.Join(rootDir, gsdDirName, "mcp.json"), &gsdMcpCfg)
+	if len(gsdMcpCfg.McpServers) != 2 {
+		t.Fatalf("expected 2 mcp servers in gsd config, got %d", len(gsdMcpCfg.McpServers))
+	}
+	if _, ok := gsdMcpCfg.McpServers["demo"]; !ok {
+		t.Fatalf("expected demo in gsd config")
+	}
+	if _, ok := gsdMcpCfg.McpServers["tidewave"]; !ok {
+		t.Fatalf("expected tidewave in gsd config")
 	}
 
 	var codexCfg map[string]any

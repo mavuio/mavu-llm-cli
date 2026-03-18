@@ -40,6 +40,7 @@ const (
 	agentsFilename         = "AGENTS.md"
 	claudeFilename         = "CLAUDE.md"
 	mavuDirName            = ".mavu"
+	gsdDirName             = ".gsd"
 	localConfigFilename    = "config.toml"
 	legacyConfigFilename   = ".mavu_llm.toml"
 	opencodeConfigFilename = "opencode.json"
@@ -48,7 +49,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.13"
+	version                = "0.2.14"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -3052,7 +3053,6 @@ func writeOpenCodeConfig(rootDir string, mcpEntries map[string]any) error {
 }
 
 func writeMcpConfig(rootDir string, mcpEntries map[string]any) error {
-	path := filepath.Join(rootDir, mcpConfigFilename)
 	mcpServers := make(map[string]any, len(mcpEntries))
 	for name, value := range mcpEntries {
 		server, ok := value.(map[string]any)
@@ -3067,7 +3067,20 @@ func writeMcpConfig(rootDir string, mcpEntries map[string]any) error {
 		return err
 	}
 	payload = append(payload, '\n')
-	return writeFile(path, payload)
+
+	paths := []string{
+		filepath.Join(rootDir, mcpConfigFilename),
+		filepath.Join(rootDir, gsdDirName, "mcp.json"),
+	}
+	for _, path := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), defaultDirPermission); err != nil {
+			return err
+		}
+		if err := writeFile(path, payload); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeCodexMcpConfig(rootDir string, mcpEntries map[string]any) error {

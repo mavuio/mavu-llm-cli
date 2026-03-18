@@ -49,8 +49,9 @@ llm os --archive --yes "chatty:"
 llm os --delete --yes "#a1b2"
 ```
 
-When a project type defines `mcps`, llm writes `opencode.json`, `.mcp.json`, and
-`.codex/config.toml` into the target directory using the MCP templates.
+When a project type defines `mcps`, llm writes `opencode.json`, `.mcp.json`,
+`.gsd/mcp.json`, and `.codex/config.toml` into the target directory using the
+MCP templates.
 
 ## Local Project Configuration
 
@@ -99,7 +100,7 @@ Create project-specific MCP configurations in `.mavu/mcp.json`.
 - Local MCPs take precedence over global MCP templates
 - Supports environment variable expansion: `${VAR_NAME}`
 - Merged with global MCPs defined in project config
-- Written to `.mcp.json` (Claude Desktop), `opencode.json` (OpenCode), and `.codex/config.toml` (Codex)
+- Written to `.mcp.json` (Claude Desktop), `.gsd/mcp.json` (GSD), `opencode.json` (OpenCode), and `.codex/config.toml` (Codex)
 - Note: Codex only loads `.codex/config.toml` for trusted projects (configured in `~/.codex/config.toml`).
 
 ## Templates
