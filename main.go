@@ -49,7 +49,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.14"
+	version                = "0.2.15"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
