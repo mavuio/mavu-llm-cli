@@ -27,7 +27,8 @@
       "Bash(head:*)",
       "Bash(go build -o /tmp/llm-test . && /tmp/llm-test os 2>&1)",
       "Bash(/tmp/llm-test os:*)",
-      "Bash(gofmt:*)"
+      "Bash(gofmt:*)",
+      "Bash(./llm update:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

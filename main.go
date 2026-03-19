@@ -2067,7 +2067,7 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 		if err := writeOpenCodeConfig(rootDir, mcpEntries); err != nil {
 			return err
 		}
-		if err := writeMcpConfig(rootDir, mcpEntries); err != nil {
+		if err := writeGsdMcpConfig(rootDir, mcpEntries); err != nil {
 			return err
 		}
 		if err := writeCodexMcpConfig(rootDir, mcpEntries); err != nil {
@@ -2308,20 +2308,6 @@ func mcpTemplateFilename(name string) string {
 		return trimmed
 	}
 	return trimmed + mcpTemplateExt
-}
-
-func normalizeMcpServer(entry map[string]any) map[string]any {
-	normalized := make(map[string]any, len(entry))
-	for key, value := range entry {
-		if key == "enabled" {
-			continue
-		}
-		normalized[key] = value
-	}
-	if value, ok := normalized["type"].(string); ok && value == "remote" {
-		normalized["type"] = "http"
-	}
-	return normalized
 }
 
 func loadMcpTemplate(path string) (map[string]any, []string, error) {
@@ -3052,15 +3038,10 @@ func writeOpenCodeConfig(rootDir string, mcpEntries map[string]any) error {
 	return writeFile(path, payload)
 }
 
-func writeMcpConfig(rootDir string, mcpEntries map[string]any) error {
+func writeGsdMcpConfig(rootDir string, mcpEntries map[string]any) error {
 	mcpServers := make(map[string]any, len(mcpEntries))
-	for name, value := range mcpEntries {
-		server, ok := value.(map[string]any)
-		if !ok {
-			mcpServers[name] = value
-			continue
-		}
-		mcpServers[name] = normalizeMcpServer(server)
+	for name := range mcpEntries {
+		mcpServers[name] = map[string]string{"command": name + "-mcp"}
 	}
 	payload, err := json.MarshalIndent(mcpConfig{McpServers: mcpServers}, "", "  ")
 	if err != nil {
@@ -3068,16 +3049,19 @@ func writeMcpConfig(rootDir string, mcpEntries map[string]any) error {
 	}
 	payload = append(payload, '\n')
 
-	paths := []string{
-		filepath.Join(rootDir, mcpConfigFilename),
-		filepath.Join(rootDir, gsdDirName, "mcp.json"),
+	path := filepath.Join(rootDir, gsdDirName, "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(path), defaultDirPermission); err != nil {
+		return err
 	}
-	for _, path := range paths {
-		if err := os.MkdirAll(filepath.Dir(path), defaultDirPermission); err != nil {
-			return err
-		}
-		if err := writeFile(path, payload); err != nil {
-			return err
+	if err := writeFile(path, payload); err != nil {
+		return err
+	}
+
+	// Remove legacy top-level .mcp.json if present.
+	legacyPath := filepath.Join(rootDir, mcpConfigFilename)
+	if err := os.Remove(legacyPath); err == nil {
+		if verboseOutput {
+			fmt.Printf("Removed %s\n", legacyPath)
 		}
 	}
 	return nil

@@ -5,11 +5,7 @@ This is a web application written using the Phoenix web framework.
 it shows you if the file compiled successfully
 
 
-## MCP TOOL RULES
 
-**Tidewave:** Always use the `mcp_call` tool directly for Tidewave. Do **not** use `mcporter call`, `mcp_servers`, or `mcp_discover` for Tidewave — they have known issues with its schema. The `mcp_call` tool works reliably , also `mcporter list`
-
-**Other MCP servers:** If the harness provides an `mcp_call` tool, prefer calling via `mcporter call` in bash. `mcporter call` is more reliable for non-Tidewave servers. If no `mcp_call` tool exists in the harness, this rule does not apply.
 ## PROJECT EVAL
 
 For evaluating code in the context of the Phoenix project always exclusively use the tidewave MCP Server. It should already have been comfortably configured in the environment.

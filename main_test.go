@@ -46,7 +46,6 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 
 	assertFileExists(t, filepath.Join(rootDir, mavuDirName, localConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, opencodeConfigFilename))
-	assertFileExists(t, filepath.Join(rootDir, mcpConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, gsdDirName, "mcp.json"))
 	assertFileExists(t, filepath.Join(rootDir, agentsFilename))
 	assertFileExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
@@ -174,16 +173,9 @@ mcps = ["demo"]
 		t.Fatalf("expected tidewave in opencode config")
 	}
 
-	var mcpCfg mcpConfig
-	loadJSON(t, filepath.Join(rootDir, mcpConfigFilename), &mcpCfg)
-	if len(mcpCfg.McpServers) != 2 {
-		t.Fatalf("expected 2 mcp servers, got %d", len(mcpCfg.McpServers))
-	}
-	if _, ok := mcpCfg.McpServers["demo"]; !ok {
-		t.Fatalf("expected demo in mcp config")
-	}
-	if _, ok := mcpCfg.McpServers["tidewave"]; !ok {
-		t.Fatalf("expected tidewave in mcp config")
+	// .mcp.json should NOT be written
+	if _, err := os.Stat(filepath.Join(rootDir, mcpConfigFilename)); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to not exist", mcpConfigFilename)
 	}
 
 	var gsdMcpCfg mcpConfig
@@ -191,11 +183,19 @@ mcps = ["demo"]
 	if len(gsdMcpCfg.McpServers) != 2 {
 		t.Fatalf("expected 2 mcp servers in gsd config, got %d", len(gsdMcpCfg.McpServers))
 	}
-	if _, ok := gsdMcpCfg.McpServers["demo"]; !ok {
-		t.Fatalf("expected demo in gsd config")
-	}
-	if _, ok := gsdMcpCfg.McpServers["tidewave"]; !ok {
-		t.Fatalf("expected tidewave in gsd config")
+	for _, name := range []string{"demo", "tidewave"} {
+		entry, ok := gsdMcpCfg.McpServers[name]
+		if !ok {
+			t.Fatalf("expected %s in gsd config", name)
+		}
+		server, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("expected %s to be a map", name)
+		}
+		expectedCmd := name + "-mcp"
+		if cmd, _ := server["command"].(string); cmd != expectedCmd {
+			t.Fatalf("expected %s command=%q, got %q", name, expectedCmd, cmd)
+		}
 	}
 
 	var codexCfg map[string]any
@@ -213,6 +213,39 @@ mcps = ["demo"]
 	if _, ok := mcpServers["tidewave"]; !ok {
 		t.Fatalf("expected tidewave in codex config")
 	}
+}
+
+func TestUpdateRemovesLegacyMcpJson(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "legacy_mcp.toml"), `name = "Legacy MCP"
+skills = ["core-skill"]
+commands = ["teach"]
+mcps = ["demo"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	writeTemplateFile(t, templatesDir, filepath.Join(commandTemplatesDir, "teach.md"), "teach")
+	writeTemplateFile(t, templatesDir, filepath.Join(mcpTemplatesDir, "demo.mcp.json"), `{"demo": {"type": "remote", "url": "http://localhost/demo", "enabled": true}}`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "legacy_mcp", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	// Simulate a legacy .mcp.json left over from a previous version.
+	legacyPath := filepath.Join(rootDir, mcpConfigFilename)
+	if err := os.WriteFile(legacyPath, []byte(`{"mcpServers":{}}`), 0644); err != nil {
+		t.Fatalf("write legacy file: %v", err)
+	}
+
+	if err := runUpdate([]string{"--path", rootDir}); err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed after update", mcpConfigFilename)
+	}
+	assertFileExists(t, filepath.Join(rootDir, gsdDirName, "mcp.json"))
 }
 
 func TestCommandCopyLayout(t *testing.T) {

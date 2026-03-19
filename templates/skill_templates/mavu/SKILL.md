@@ -191,11 +191,11 @@ MavuBuckets.subscribe_live_view("foo_detail:" <> assigns.foo.id)
 
 Note: `MavuBuckets.bucket_cache/4` appears only in docs at the moment and is not referenced in app code.
 
-## Mavu logging
+## Logging
 
 ### MavuUtils.log/3
 
-Always use MavuUtils.log/3 instead of Logger.log/3. It is a wrapper around Logger.log/3.
+**Always** use MavuUtils.log instead of Logger.* It is a wrapper around Logger.log/3.
 
 Example:
 
