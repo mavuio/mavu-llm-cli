@@ -46,7 +46,6 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 
 	assertFileExists(t, filepath.Join(rootDir, mavuDirName, localConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, opencodeConfigFilename))
-	assertFileExists(t, filepath.Join(rootDir, gsdDirName, "mcp.json"))
 	assertFileExists(t, filepath.Join(rootDir, agentsFilename))
 	assertFileExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
 	assertFileExists(t, filepath.Join(rootDir, ".claude", claudeFilename))
@@ -178,24 +177,9 @@ mcps = ["demo"]
 		t.Fatalf("expected %s to not exist", mcpConfigFilename)
 	}
 
-	var gsdMcpCfg mcpConfig
-	loadJSON(t, filepath.Join(rootDir, gsdDirName, "mcp.json"), &gsdMcpCfg)
-	if len(gsdMcpCfg.McpServers) != 2 {
-		t.Fatalf("expected 2 mcp servers in gsd config, got %d", len(gsdMcpCfg.McpServers))
-	}
-	for _, name := range []string{"demo", "tidewave"} {
-		entry, ok := gsdMcpCfg.McpServers[name]
-		if !ok {
-			t.Fatalf("expected %s in gsd config", name)
-		}
-		server, ok := entry.(map[string]any)
-		if !ok {
-			t.Fatalf("expected %s to be a map", name)
-		}
-		expectedCmd := name + "-mcp"
-		if cmd, _ := server["command"].(string); cmd != expectedCmd {
-			t.Fatalf("expected %s command=%q, got %q", name, expectedCmd, cmd)
-		}
+	// .gsd/mcp.json should NOT be written
+	if _, err := os.Stat(filepath.Join(rootDir, gsdDirName, "mcp.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected .gsd/mcp.json to not exist")
 	}
 
 	var codexCfg map[string]any
@@ -245,7 +229,9 @@ mcps = ["demo"]
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
 		t.Fatalf("expected %s to be removed after update", mcpConfigFilename)
 	}
-	assertFileExists(t, filepath.Join(rootDir, gsdDirName, "mcp.json"))
+	if _, err := os.Stat(filepath.Join(rootDir, gsdDirName, "mcp.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected .gsd/mcp.json to not exist after update")
+	}
 }
 
 func TestCommandCopyLayout(t *testing.T) {

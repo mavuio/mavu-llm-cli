@@ -49,7 +49,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.15"
+	version                = "0.2.16"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -2059,15 +2059,13 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 	}
 
 	mcpNames := uniqueOrdered(codexConfig.Mcps, claudeConfig.Mcps)
+	removeGsdMcpConfig(rootDir)
 	if len(mcpNames) > 0 {
 		mcpEntries, err := loadMcpEntries(rootDir, templateRoot, mcpNames)
 		if err != nil {
 			return err
 		}
 		if err := writeOpenCodeConfig(rootDir, mcpEntries); err != nil {
-			return err
-		}
-		if err := writeGsdMcpConfig(rootDir, mcpEntries); err != nil {
 			return err
 		}
 		if err := writeCodexMcpConfig(rootDir, mcpEntries); err != nil {
@@ -2976,10 +2974,6 @@ type openCodeConfig struct {
 	Schema string         `json:"$schema"`
 }
 
-type mcpConfig struct {
-	McpServers map[string]any `json:"mcpServers"`
-}
-
 func loadMcpEntries(rootDir, templateRoot string, mcpNames []string) (map[string]any, error) {
 	// Load local MCPs first (these take precedence)
 	localEntries, localMissing, err := loadLocalMcpEntries(rootDir)
@@ -3038,23 +3032,13 @@ func writeOpenCodeConfig(rootDir string, mcpEntries map[string]any) error {
 	return writeFile(path, payload)
 }
 
-func writeGsdMcpConfig(rootDir string, mcpEntries map[string]any) error {
-	mcpServers := make(map[string]any, len(mcpEntries))
-	for name := range mcpEntries {
-		mcpServers[name] = map[string]string{"command": name + "-mcp"}
-	}
-	payload, err := json.MarshalIndent(mcpConfig{McpServers: mcpServers}, "", "  ")
-	if err != nil {
-		return err
-	}
-	payload = append(payload, '\n')
-
-	path := filepath.Join(rootDir, gsdDirName, "mcp.json")
-	if err := os.MkdirAll(filepath.Dir(path), defaultDirPermission); err != nil {
-		return err
-	}
-	if err := writeFile(path, payload); err != nil {
-		return err
+func removeGsdMcpConfig(rootDir string) {
+	// Remove .gsd/mcp.json if present (no longer written).
+	gsdPath := filepath.Join(rootDir, gsdDirName, "mcp.json")
+	if err := os.Remove(gsdPath); err == nil {
+		if verboseOutput {
+			fmt.Printf("Removed %s\n", gsdPath)
+		}
 	}
 
 	// Remove legacy top-level .mcp.json if present.
@@ -3064,7 +3048,6 @@ func writeGsdMcpConfig(rootDir string, mcpEntries map[string]any) error {
 			fmt.Printf("Removed %s\n", legacyPath)
 		}
 	}
-	return nil
 }
 
 func writeCodexMcpConfig(rootDir string, mcpEntries map[string]any) error {

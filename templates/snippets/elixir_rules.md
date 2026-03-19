@@ -8,9 +8,7 @@ it shows you if the file compiled successfully
 
 ## PROJECT EVAL
 
-For evaluating code in the context of the Phoenix project always exclusively use the tidewave MCP Server. It should already have been comfortably configured in the environment.
-
-It runs on the same port as the dev-server itself, as it is part of it.
+For evaluating code in the context of the Phoenix project always exclusively use the tidewave-cli via bash
 
 Never shell out to `iex`, `mix run`, or `elixir -e` for        
  runtime inspection. These start a separate BEAM node that cannot 
