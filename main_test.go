@@ -45,10 +45,11 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 	}
 
 	assertFileExists(t, filepath.Join(rootDir, mavuDirName, localConfigFilename))
-	assertFileExists(t, filepath.Join(rootDir, opencodeConfigFilename))
 	assertFileExists(t, filepath.Join(rootDir, agentsFilename))
-	assertFileExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
 	assertFileExists(t, filepath.Join(rootDir, ".claude", claudeFilename))
+	// MCP config writing is disabled — opencode.json and .codex/config.toml should NOT be written
+	assertFileNotExists(t, filepath.Join(rootDir, opencodeConfigFilename))
+	assertFileNotExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
 	assertDirExists(t, filepath.Join(rootDir, ".codex", "skills", "beans"))
 	assertDirExists(t, filepath.Join(rootDir, ".claude", "skills", "beans"))
 	assertFileExists(t, filepath.Join(rootDir, ".opencode", "command", "teach.md"))
@@ -160,16 +161,9 @@ mcps = ["demo"]
 		t.Fatalf("run init: %v", err)
 	}
 
-	var openCfg openCodeConfig
-	loadJSON(t, filepath.Join(rootDir, opencodeConfigFilename), &openCfg)
-	if len(openCfg.Mcp) != 2 {
-		t.Fatalf("expected 2 mcp entries, got %d", len(openCfg.Mcp))
-	}
-	if _, ok := openCfg.Mcp["demo"]; !ok {
-		t.Fatalf("expected demo in opencode config")
-	}
-	if _, ok := openCfg.Mcp["tidewave"]; !ok {
-		t.Fatalf("expected tidewave in opencode config")
+	// MCP config writing is disabled — no opencode.json should be written
+	if _, err := os.Stat(filepath.Join(rootDir, opencodeConfigFilename)); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to not exist (MCP writing disabled)", opencodeConfigFilename)
 	}
 
 	// .mcp.json should NOT be written
@@ -182,20 +176,14 @@ mcps = ["demo"]
 		t.Fatalf("expected .gsd/mcp.json to not exist")
 	}
 
-	var codexCfg map[string]any
-	loadTOML(t, filepath.Join(rootDir, ".codex", "config.toml"), &codexCfg)
-	mcpServers, ok := codexCfg["mcp_servers"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected mcp_servers table in codex config")
-	}
-	if len(mcpServers) != 2 {
-		t.Fatalf("expected 2 mcp servers in codex config, got %d", len(mcpServers))
-	}
-	if _, ok := mcpServers["demo"]; !ok {
-		t.Fatalf("expected demo in codex config")
-	}
-	if _, ok := mcpServers["tidewave"]; !ok {
-		t.Fatalf("expected tidewave in codex config")
+	// .codex/config.toml should NOT contain mcp_servers
+	codexPath := filepath.Join(rootDir, ".codex", "config.toml")
+	if _, err := os.Stat(codexPath); err == nil {
+		var codexCfg map[string]any
+		loadTOML(t, codexPath, &codexCfg)
+		if _, ok := codexCfg["mcp_servers"]; ok {
+			t.Fatalf("expected no mcp_servers in codex config (MCP writing disabled)")
+		}
 	}
 }
 
@@ -273,6 +261,7 @@ commands = ["missing"]
 }
 
 func TestRunInitEmptyMcpTemplate(t *testing.T) {
+	// MCP config writing is disabled, so an empty MCP template should not cause an error.
 	templatesDir := createTemplateRoot(t)
 	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "empty_mcp.toml"), `name = "Empty MCP"
 skills = ["core-skill"]
@@ -285,10 +274,8 @@ mcps = ["empty"]
 	t.Setenv(templatesEnvVar, templatesDir)
 
 	rootDir := t.TempDir()
-	if err := runInit([]string{"--type", "empty_mcp", "--path", rootDir}); err == nil {
-		t.Fatal("expected empty mcp template error")
-	} else if !strings.Contains(err.Error(), "mcp template empty") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := runInit([]string{"--type", "empty_mcp", "--path", rootDir}); err != nil {
+		t.Fatalf("expected no error with MCP writing disabled, got: %v", err)
 	}
 }
 

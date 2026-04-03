@@ -49,7 +49,7 @@ const (
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
 	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.16"
+	version                = "0.2.17"
 	defaultFilePermission  = 0o644
 	defaultDirPermission   = 0o755
 )
@@ -2058,23 +2058,9 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 		return err
 	}
 
-	mcpNames := uniqueOrdered(codexConfig.Mcps, claudeConfig.Mcps)
+	// MCP config writing is currently disabled.
+	// Clean up legacy MCP files only.
 	removeGsdMcpConfig(rootDir)
-	if len(mcpNames) > 0 {
-		mcpEntries, err := loadMcpEntries(rootDir, templateRoot, mcpNames)
-		if err != nil {
-			return err
-		}
-		if err := writeOpenCodeConfig(rootDir, mcpEntries); err != nil {
-			return err
-		}
-		if err := writeCodexMcpConfig(rootDir, mcpEntries); err != nil {
-			return err
-		}
-		if err := ensureCodexProjectTrusted(rootDir); err != nil {
-			return err
-		}
-	}
 
 	if err := writeRootDocs(rootDir, templateRoot, codexConfig, claudeConfig); err != nil {
 		return err
