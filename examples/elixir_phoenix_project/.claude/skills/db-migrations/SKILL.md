@@ -31,7 +31,7 @@ Always show the generated migration files for user inspection before proceeding:
 cat priv/repo/migrations/*_<migration_name>.exs
 ```
 
-**Never run migrations automatically.** Wait for explicit user approval after they have reviewed the migration files.
+**Never run migrations automatically unless you are in a work tree.** Otherwise, wait for explicit user approval after they have reviewed the migration files.
 
 ## Run Migrations
 

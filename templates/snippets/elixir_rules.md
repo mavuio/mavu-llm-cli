@@ -5,6 +5,8 @@ This is a web application written using the Phoenix web framework.
 it shows you if the file compiled successfully
 
 
+## DEV SERVER PORT
+dont guess, always consult `tidewave-cli --port`
 
 ## PROJECT EVAL
 
@@ -16,6 +18,22 @@ Never shell out to `iex`, `mix run`, or `elixir -e` for
  ETS tables, PubSub, and supervision trees are all invisible.     
  Tidewave evaluates inside the running dev server, which is the   
  only context where live data exists. 
+
+
+## STATIC CODE ANALYSIS (Giulia CLI)
+
+Use `giulia-cli` for static code analysis and knowledge graph queries. Runs against an indexed codebase — no running server needed. Use `giulia-cli list` to see all tools.
+
+```bash
+giulia-cli brief_architect --path $PWD              # project overview + health
+giulia-cli index_module_details --module MyApp.Foo --path $PWD  # module introspection
+giulia-cli knowledge_dependents --module MyApp.Foo --path $PWD  # who depends on this?
+giulia-cli knowledge_impact --module MyApp.Foo --path $PWD --depth 2  # blast radius
+giulia-cli search_semantic --concept "edge handling" --path $PWD     # semantic search
+```
+
+Use Giulia for structure & dependencies, Tidewave for runtime state & live evaluation.
+
 
 ## ENVIRONMENT VARIABLES RULES
 

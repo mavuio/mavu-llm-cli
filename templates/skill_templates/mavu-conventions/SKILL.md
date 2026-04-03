@@ -1,17 +1,20 @@
 ---
-name: mavu
-description: Tools and conventions for general tooling in a mavu-style phoenix codebase 
+name: mavu-conventions
+description: Core Mavu code conventions — entity resolution, result tuples, map access, logging, m/1 macro, happy_with, MavuBuckets. Use whenever working in a Mavu codebase.
 ---
 
-# Mavu Code Patterns
+# Mavu Core Conventions
 
-Use this skill when you need to recognize or apply Mavu-specific conventions. Examples below are pulled from the current codebase.
+Use this skill when you need to recognize or apply Mavu-specific conventions for data access, error handling, and common utilities.
 
 ## When to use this skill
 
-- Adding or updating Mavu resources/tools that should follow established patterns
-- Reviewing code that relies on Mavu utilities like resolve helpers, buckets, or log helpers
-- Answering questions about common Mavu utilities and macros
+- Querying or resolving entities
+- Handling result tuples and error flows
+- Accessing map/struct fields
+- Logging
+- Using MavuBuckets for key-value storage
+- Any general Elixir work in a Mavu codebase
 
 ## Entity resolution
 
@@ -19,16 +22,9 @@ Use this skill when you need to recognize or apply Mavu-specific conventions. Ex
 
 Resolve any entity by its web ID (human-friendly ID with prefix).
 
-Example:
-
 ```elixir
 foo = MyApp.MavuEntities.resolve!("ag SNTX0")
 ```
-
-Used in:
-
-- lib/my_app/tools/tool_execute_trade.ex
-- scripts/test_trigger_evaluation.exs
 
 ### webid format
 
@@ -43,20 +39,6 @@ Defined in: lib/my_app/_bit/mavu_entities/
 
 Each Ash resource exposes resolve helpers to normalize IDs or structs.
 
-Example (Task resource):
-
-```elixir
-def resolve!(any, opts \\ []), do: resolve(any, opts) |> MavuUtils.unwrap!()
-def resolve0(any, opts \\ []), do: resolve(any, opts) |> MavuUtils.unwrap0()
-```
-
-Resolution can be done by id, webid, and any identity of the resource.
-if you pass a resource-struct, it will be returned as is.
-
-### Resource resolve/resolve!/resolve0
-
-Each Ash resource exposes resolve helpers to normalize IDs or structs.
-
 **Resolution accepts:**
 - UUID (`"019bd03a-2094-739b-b5bf-db2b08ea34b8"`)
 - WebID (`"ag_032CLtNxtjfzxBQtv1dbya"`)
@@ -64,8 +46,6 @@ Each Ash resource exposes resolve helpers to normalize IDs or structs.
 - The resource struct itself (returned as-is)
 
 **Prefer resource-specific resolve over MavuEntities.resolve!** when you know the resource type.
-
-Example:
 
 ```elixir
 # By name identity
@@ -79,19 +59,15 @@ MyApp.Foo.resolve!("019bd03a-2094-739b-b5bf-db2b08ea34b8")
 
 # By webid
 MyApp.Foo.resolve!("foo_032CLtNxtjfzxBQtv1dbya")
-Use resolve/1 for {:ok, result} tuples, resolve!/1 to unwrap or raise, resolve0/1 to unwrap or return nil.
-
-
 ```
 
+Use `resolve/1` for `{:ok, result}` tuples, `resolve!/1` to unwrap or raise, `resolve0/1` to unwrap or return nil.
 
 ## Result tuple handling
 
 ### MavuUtils.unwrap0/1
 
 Unwraps `{:ok, value}` to `value`, returns nil on error.
-
-Example:
 
 ```elixir
 def resolve0(any, opts \\ []), do: resolve(any, opts) |> MavuUtils.unwrap0()
@@ -101,16 +77,14 @@ def resolve0(any, opts \\ []), do: resolve(any, opts) |> MavuUtils.unwrap0()
 
 ### MavuUtils.any_get0/2
 
-Flexible getter that works with maps, structs, keyword lists, and atom/string keys. Also loads lazy Ash attributes (calculations, aggregates, relationships) automatically using `Ash.load` internally.
+Never have two codepaths for atom / non-atom versions of a map key, when you can use `MavuUtils.any_get0()` instead (maybe except for pattern matching in function heads).
 
-Example:
+Flexible getter that works with maps, structs, keyword lists, and atom/string keys. Also loads lazy Ash attributes (calculations, aggregates, relationships) automatically using `Ash.load` internally.
 
 ```elixir
 MavuBuckets.get_value("foo_job:#{foo.id}", "state", %{}, opts)
 |> MavuUtils.any_get0(key)
 ```
-
-Example (loading lazy Ash attribute):
 
 ```elixir
 # Loads :webid calculation on the fly
@@ -119,9 +93,7 @@ foo |> MavuUtils.any_get0(:webid)
 
 ## Shorthand m/1 macro
 
-`m/1` (from `Shorthand`) builds or pattern-matches maps using same-name keys. It is commonly used in Reactor steps.
-
-Example:
+`m/1` (from `Shorthand`) builds or pattern-matches maps using same-name keys. Commonly used in Reactor steps.
 
 ```elixir
 run fn m(foo), _context ->
@@ -129,12 +101,9 @@ run fn m(foo), _context ->
 end
 ```
 
-
 ## assign_new with m/1
 
 Use `assign_new/3` with `m/1` to pull prior assigns without repeating key names.
-
-Example:
 
 ```elixir
 assigns
@@ -144,9 +113,7 @@ assigns
 
 ## happy_with Macro
 
-Syntactic sugar for Elixir's `with` that keeps left-arrow chains tidy. The key feature is **tagged pattern matching** using `@tag` - when a step fails, you know exactly which one.
-
-### Tagged Pattern Matching
+Syntactic sugar for Elixir's `with` that keeps left-arrow chains tidy. The key feature is **tagged pattern matching** using `@tag` — when a step fails, you know exactly which one.
 
 ```elixir
 happy_with do
@@ -155,42 +122,30 @@ happy_with do
   {:ok, results}
 else
   {error_tag, error_context} ->
-    # error_tag is :run_action or :log_result - identifies which step failed
+    # error_tag is :run_action or :log_result — identifies which step failed
     {:error, {error_tag, msg, error_context}}
 end
 ```
 
-### Key Benefits
-
-- **Tags identify failed step** - Errors come as `{tag, original_error}` in the `else` clause
-- **Cleaner syntax** - Last expression is the return value automatically
-- **Guard support** - `@tag {:ok, x} when is_binary(x) <- expr`
+- **Tags identify failed step** — Errors come as `{tag, original_error}` in the `else` clause
+- **Guard support** — `@tag {:ok, x} when is_binary(x) <- expr`
 
 ## MavuBuckets
 
-Key-value store backed by the database with PubSub support for LiveView.
-Garbage collection is handled automatically by the database.
-
-Example:
+Key-value store backed by the database with PubSub support for LiveView. Garbage collection is handled automatically.
 
 ```elixir
 MavuBuckets.set_value("foo:#{id}", "iteration", 0, persistence_level: 100)
 MavuBuckets.subscribe_live_view("foo_detail:" <> assigns.foo.id)
 ```
 
-
-Note: `MavuBuckets.bucket_cache/4` appears only in docs at the moment and is not referenced in app code.
-
-## Mavu logging
+## Logging
 
 ### MavuUtils.log/3
 
-Always use MavuUtils.log/3 instead of Logger.log/3. It is a wrapper around Logger.log/3.
-
-Example:
+**Always** use `MavuUtils.log` instead of `Logger.*`. It is a wrapper around `Logger.log/3`.
 
 ```elixir
 params
 |> MavuUtils.log("#clgreen CodeReloaderController", :info)
 ```
-
