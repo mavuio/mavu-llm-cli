@@ -7,7 +7,9 @@ description: Mavu UI/component building patterns — LiveView directory conventi
 
 Use this skill when creating or modifying LiveViews, components, or UI code in a Mavu codebase.
 
-**Also read:** [coding-guidelines.md](coding-guidelines.md) — detailed code patterns with examples (assign_new pipelines, form DSL, edit workflows, result handling, etc.)
+**Also read:**
+- [coding-guidelines.md](coding-guidelines.md) — detailed code patterns with examples (assign_new pipelines, form DSL, edit workflows, result handling, etc.)
+- [mavubit-usage-patterns.md](mavubit-usage-patterns.md) — how to use _mavubit shared components (MavuDatagrid, MavuSubforms, MavuListAsh, MavuResourceLive scaffold, MavuTags, MavuBuckets, etc.)
 
 ## When to use this skill
 
