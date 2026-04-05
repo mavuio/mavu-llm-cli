@@ -2,6 +2,92 @@
 
 Recurring patterns found across 5 Phoenix/Elixir projects.
 
+## Chained `assign_new` pipelines for derived state in components
+
+**Found in:** 5/5 projects (wzz-ex, climate, chatty, eselrw, filmarchiv-ex)
+
+**Description:** Function components and live components build up derived assigns via chained `assign_new/3` calls. Each step can reference assigns computed by previous steps, creating a pipeline that lazily resolves entity data, computes flags, and derives display values — all from a minimal set of input attrs. Three calling conventions coexist: `fn %{key: val}` destructuring, the `m()` macro shorthand, and `fn _ ->` for defaults.
+
+**Example — chained entity resolution + derived flags** (from `chatty/lib/my_app_be/messages_live/20_message_card_c.html.ex`):
+```elixir
+  def message_card(assigns) do
+    assigns =
+      assigns
+      |> assign_new(:message, fn %{message_id: id} ->
+        MyApp.Message.resolve!(id, load: [:sending_state])
+      end)
+      |> assign_new(:is_email?, fn m(message) ->
+        MyApp.MavuTags.resolve_uuid0("email") in List.wrap(message.tags)
+      end)
+      |> assign_new(:is_whatsapp?, fn m(message) ->
+        MyApp.MavuTags.resolve_uuid0("whatsapp") in List.wrap(message.tags)
+      end)
+      |> assign_new(:is_email_stub?, fn m(message, is_email?) ->
+        is_email? and email_stub?(message.content)
+      end)
+```
+
+**Example — chained resolution with `%{}` destructuring** (from `wzz-ex/lib/my_app_be/filmvideo_live/filmvideo_edit_c.html.ex`):
+```elixir
+  def videopart_square(assigns) do
+    assigns =
+      assigns
+      |> assign_new(:status, fn %{videopart: videopart, film: film} ->
+        film.video_status["#{videopart}"]
+      end)
+      |> assign_new(:task_token, fn %{videopart: videopart, film: film} ->
+        film.video_status["#{videopart}_token"]
+      end)
+      |> assign_new(:status_class, fn %{status: status} ->
+        get_status_class(status) <> " text-xs font-mono rounded-sm p-[0.2rem]"
+      end)
+```
+
+**Example — deep multi-step derivation** (from `eselrw/lib/my_app_be/arrows/new_arrow_for_entity_c.html.ex`):
+```elixir
+  def new_arrow_for_entity(assigns) do
+    assigns =
+      assigns
+      |> assign_new(:td, fn %{arrow_name: arrow_name, target_type: target_type, source: source} ->
+        {arrowtype, direction} =
+          ArrowType.get_arrowtype_and_direction!(arrow_name, source.__struct__, "#{target_type}")
+        %{arrowtype: arrowtype, direction: direction}
+      end)
+      |> assign_new(:arrowtype_config, fn %{td: td} ->
+        MyApp.ArrowType.get_config(td.arrowtype, td.direction, :target)
+      end)
+      |> assign_new(:fake_form, fn %{td: td} ->
+        create_fake_form(td.arrowtype, td.direction)
+      end)
+      |> assign_new(:fake_field, fn %{form: form, fake_form: fake_form, td: td, arrowtype_config: arrowtype_config} ->
+        new_name = form.name <> "[new_relations][#{Uuid.to_webid0({to_string(arrowtype_config.direction), td.arrowtype.id})}]"
+        field = fake_form[arrowtype_config.fieldname]
+        %{field | name: new_name}
+      end)
+      |> assign_new(:existing_arrows, fn %{source: source, td: td} ->
+        source |> Ash.load!([:arrows_ab, :arrows_ba], lazy?: true)
+        ...
+      end)
+```
+
+**Frequency breakdown:**
+| Project | `fn m()` | `fn %{}` | `fn _ ->` (defaults) | Files with assign_new |
+|---------|----------|----------|----------------------|-----------------------|
+| wzz-ex | 10 | 7 | 4 | 12 |
+| climate | 23 | 29 | 1 | 28 |
+| chatty | 31 | 2 | 3 | 21 |
+| eselrw | 5 | 12 | 3 | 14 |
+| filmarchiv-ex | 9 | 9 | 3 | 7 |
+
+**Variations:**
+- `chatty` strongly prefers the `m()` macro shorthand (31 vs 2 `%{}` destructurings).
+- `climate` uses both styles roughly equally and has the highest total count (28 files).
+- `eselrw` and `filmarchiv-ex` lean toward `%{}` destructuring.
+- Default/fallback assigns (`fn _ -> []`) appear in all 5 projects for optional CSS classes and initial state.
+- Chains of 2–7 steps are common; the deepest chains appear in `eselrw` arrows and `climate` metrics modules.
+
+---
+
 ## Shared extension-point directories and delegator modules
 
 **Found in:** 5/5 projects (wzz-ex, climate, chatty, eselrw, filmarchiv-ex)
