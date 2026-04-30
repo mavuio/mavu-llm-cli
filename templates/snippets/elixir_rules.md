@@ -20,19 +20,19 @@ Never shell out to `iex`, `mix run`, or `elixir -e` for
  only context where live data exists. 
 
 
-## STATIC CODE ANALYSIS (Giulia CLI)
+## STATIC CODE ANALYSIS (Reach)
 
-Use `giulia-cli` for static code analysis and knowledge graph queries. Runs against an indexed codebase — no running server needed. Use `giulia-cli list` to see all tools.
+Use `mix reach.*` commands for static code analysis — module dependencies, change impact, data flow tracing, and program slicing. Runs against the compiled codebase, no running server needed. See the `reach-analysis` skill for full command reference.
 
 ```bash
-giulia-cli brief_architect --path $PWD              # project overview + health
-giulia-cli index_module_details --module MyApp.Foo --path $PWD  # module introspection
-giulia-cli knowledge_dependents --module MyApp.Foo --path $PWD  # who depends on this?
-giulia-cli knowledge_impact --module MyApp.Foo --path $PWD --depth 2  # blast radius
-giulia-cli search_semantic --concept "edge handling" --path $PWD     # semantic search
+mix reach.deps MyApp.Foo.some_func/2              # what calls this / what does it call?
+mix reach.impact MyApp.Foo.some_func/2            # what breaks if I change this?
+mix reach.flow --from conn.params --to Repo       # trace data flow
+mix reach.slice lib/my_app/foo.ex:45              # minimum code affecting a value
+mix reach.modules --sort complexity                # module overview
 ```
 
-Use Giulia for structure & dependencies, Tidewave for runtime state & live evaluation.
+Use Reach for structure, dependencies & data flow. Use Tidewave for runtime state & live evaluation.
 
 
 ## ENVIRONMENT VARIABLES RULES

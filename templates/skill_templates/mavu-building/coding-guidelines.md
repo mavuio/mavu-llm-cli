@@ -116,6 +116,7 @@ end
 ```
 
 Three conventions exist — use whichever fits:
+
 - `fn %{key: val} ->` — explicit destructuring
 - `fn m(key1, key2) ->` — `Shorthand.m/1` macro
 - `fn _ -> default end` — fallback/default values
@@ -135,6 +136,7 @@ socket |> assign(items_query: items_query) |> load_items()
 Define columns and tweaks in `listconf/1` and `default_tweaks/1`.
 
 In HEEx, compose:
+
 - `FilterboxLc` for ash filters
 - `PaginationComponent` top and bottom
 - `HandleMultipleItemsComponent.buttonbox` for bulk actions
@@ -189,6 +191,7 @@ Use the shared component vocabulary:
 For tabbed forms, submit to `"choose_tab"` with `phx-value-tab="close"` instead of `"save"`.
 
 Tabs use DaisyUI:
+
 ```heex
 <div role="tablist" class="tabs tabs-box">
   <a :for={tab <- @tabs.items}
@@ -234,7 +237,7 @@ end
 
 For form saves, reassign the error form instead of toasting.
 
-## Navigation
+##  Navigation
 
 Define in `navigation.ex` as a plain data tree:
 
