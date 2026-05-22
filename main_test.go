@@ -254,6 +254,59 @@ skills = ["core-skill"]
 	}
 }
 
+func TestRunUpdatePreservesUsageRulesManagedStaleSkills(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "usage_rules_skills.toml"), `name = "Usage Rules Skills"
+skills = ["core-skill"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "usage_rules_skills", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	usageRulesPath := filepath.Join(rootDir, ".agents", "skills", "ash-framework")
+	if err := os.MkdirAll(usageRulesPath, 0o755); err != nil {
+		t.Fatalf("mkdir usage-rules skill: %v", err)
+	}
+	usageRulesSkill := `---
+name: ash-framework
+metadata:
+  managed-by: usage-rules
+---
+`
+	if err := os.WriteFile(filepath.Join(usageRulesPath, "SKILL.md"), []byte(usageRulesSkill), 0o644); err != nil {
+		t.Fatalf("write usage-rules skill: %v", err)
+	}
+
+	ordinaryStalePath := filepath.Join(rootDir, ".agents", "skills", "ordinary-stale")
+	if err := os.MkdirAll(ordinaryStalePath, 0o755); err != nil {
+		t.Fatalf("mkdir ordinary stale skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ordinaryStalePath, "SKILL.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write ordinary stale skill: %v", err)
+	}
+
+	var runErr error
+	output := captureOutput(t, func() {
+		runErr = runUpdate([]string{"--path", rootDir})
+	})
+	if runErr != nil {
+		t.Fatalf("run update: %v", runErr)
+	}
+
+	assertFileExists(t, filepath.Join(usageRulesPath, "SKILL.md"))
+	assertFileNotExists(t, ordinaryStalePath)
+	if strings.Contains(output, "ash-framework") {
+		t.Fatalf("expected usage-rules managed skill to be omitted from removal output, got: %s", output)
+	}
+	if !strings.Contains(output, "Removed 1 stale skill(s) from agents: ordinary-stale") {
+		t.Fatalf("expected ordinary stale skill removal message, got: %s", output)
+	}
+}
+
 func TestRunUpdatePreservesLocalSkillTemplates(t *testing.T) {
 	templatesDir := createTemplateRoot(t)
 	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "local_skill_preserve.toml"), `name = "Local Skill Preserve"

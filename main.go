@@ -2774,6 +2774,14 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 			if _, ok := desiredSkills[entry.Name()]; ok {
 				continue
 			}
+			entryPath := filepath.Join(target.path, entry.Name())
+			managedByUsageRules, err := isUsageRulesManagedSkill(entryPath)
+			if err != nil {
+				return err
+			}
+			if managedByUsageRules {
+				continue
+			}
 			toRemove = append(toRemove, entry.Name())
 		}
 		if len(toRemove) > 0 {
@@ -2800,6 +2808,18 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 		}
 	}
 	return nil
+}
+
+func isUsageRulesManagedSkill(skillDir string) (bool, error) {
+	path := filepath.Join(skillDir, "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	return strings.Contains(string(data), "managed-by: usage-rules"), nil
 }
 
 func createCommandDirs(rootDir, templateRoot string, codexConfig, claudeConfig ResolvedToolConfig) error {
