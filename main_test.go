@@ -216,6 +216,74 @@ func TestRunUpdateRefreshesManagedGitignore(t *testing.T) {
 	assertFileContent(t, path, expected)
 }
 
+func TestRunUpdateRemovesStaleSkillsWithoutPrompt(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "stale_skills.toml"), `name = "Stale Skills"
+skills = ["core-skill"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "stale_skills", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	stalePath := filepath.Join(rootDir, ".agents", "skills", "stale-skill")
+	if err := os.MkdirAll(stalePath, 0o755); err != nil {
+		t.Fatalf("mkdir stale skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stalePath, "SKILL.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale skill: %v", err)
+	}
+
+	var runErr error
+	output := captureOutput(t, func() {
+		runErr = runUpdate([]string{"--path", rootDir})
+	})
+	if runErr != nil {
+		t.Fatalf("run update: %v", runErr)
+	}
+
+	assertFileNotExists(t, stalePath)
+	if !strings.Contains(output, "Removed 1 stale skill(s) from agents: stale-skill") {
+		t.Fatalf("expected stale skill removal message, got: %s", output)
+	}
+	if strings.Contains(output, "Move to .mavu/skill_templates/ to keep them?") {
+		t.Fatalf("expected no preservation prompt, got: %s", output)
+	}
+}
+
+func TestRunUpdatePreservesLocalSkillTemplates(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "local_skill_preserve.toml"), `name = "Local Skill Preserve"
+skills = ["core-skill"]
+`)
+	writeTemplateFile(t, templatesDir, filepath.Join(skillTemplatesDir, "core-skill", "SKILL.md"), "core")
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "local_skill_preserve", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	localSkillPath := filepath.Join(rootDir, mavuDirName, skillTemplatesDir, "local-custom", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(localSkillPath), 0o755); err != nil {
+		t.Fatalf("mkdir local skill: %v", err)
+	}
+	if err := os.WriteFile(localSkillPath, []byte("local"), 0o644); err != nil {
+		t.Fatalf("write local skill: %v", err)
+	}
+
+	if err := runUpdate([]string{"--path", rootDir}); err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+
+	assertFileExists(t, filepath.Join(rootDir, ".codex", "skills", "local-custom", "SKILL.md"))
+	assertFileExists(t, filepath.Join(rootDir, ".claude", "skills", "local-custom", "SKILL.md"))
+	assertFileExists(t, filepath.Join(rootDir, ".agents", "skills", "local-custom", "SKILL.md"))
+}
+
 func TestCommandOverrides(t *testing.T) {
 	templatesDir := createTemplateRoot(t)
 	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "command_overrides.toml"), `name = "Command Overrides"

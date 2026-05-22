@@ -2777,39 +2777,7 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 			toRemove = append(toRemove, entry.Name())
 		}
 		if len(toRemove) > 0 {
-			fmt.Printf("Warning: %d skill(s) not in config will be removed from %s: %s\n", len(toRemove), target.label, strings.Join(toRemove, ", "))
-			fmt.Print("Move to .mavu/skill_templates/ to keep them? [y/N]: ")
-			reader := bufio.NewReader(os.Stdin)
-			input, _ := reader.ReadString('\n')
-			input = strings.TrimSpace(strings.ToLower(input))
-
-			if input == "y" || input == "yes" {
-				localSkillsDir := filepath.Join(rootDir, mavuDirName, skillTemplatesDir)
-				if err := os.MkdirAll(localSkillsDir, defaultDirPermission); err != nil {
-					return err
-				}
-				for _, name := range toRemove {
-					src := filepath.Join(target.path, name)
-					dst := filepath.Join(localSkillsDir, name)
-					if _, err := os.Stat(dst); err == nil {
-						fmt.Printf("  Skipping %s (already exists in .mavu/skill_templates/)\n", name)
-						continue
-					}
-					if err := os.Rename(src, dst); err != nil {
-						return fmt.Errorf("move %s: %w", name, err)
-					}
-					fmt.Printf("  Moved %s to .mavu/skill_templates/\n", name)
-				}
-				// Re-discover local skills and update desired skills
-				localSkills, err = discoverLocalSkills(rootDir)
-				if err != nil {
-					return fmt.Errorf("re-discover local skills: %w", err)
-				}
-				for _, skill := range localSkills {
-					desiredSkills[skill] = struct{}{}
-				}
-				toRemove = nil // Clear since we moved them
-			}
+			fmt.Printf("Removed %d stale skill(s) from %s: %s\n", len(toRemove), target.label, strings.Join(toRemove, ", "))
 		}
 		for _, name := range toRemove {
 			if err := os.RemoveAll(filepath.Join(target.path, name)); err != nil {
