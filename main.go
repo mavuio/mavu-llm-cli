@@ -45,6 +45,9 @@ const (
 	legacyConfigFilename   = ".mavu_llm.toml"
 	opencodeConfigFilename = "opencode.json"
 	mcpConfigFilename      = ".mcp.json"
+	gitignoreFilename      = ".gitignore"
+	gitignoreManagedStart  = "# BEGIN mavu-llm managed"
+	gitignoreManagedEnd    = "# END mavu-llm managed"
 	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
 	usageRulesFilename     = "USAGE_RULES.md"
 	usageRulesOutputPath   = "USAGE_RULES.md"
@@ -55,6 +58,8 @@ const (
 )
 
 var verboseOutput bool
+
+var managedGitignoreEntries = []string{".pi", ".dexter.*", ".bit"}
 
 type ProjectConfig struct {
 	Name              string     `toml:"name"`
@@ -2062,6 +2067,10 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 	// Clean up legacy MCP files only.
 	removeGsdMcpConfig(rootDir)
 
+	if err := ensureManagedGitignore(rootDir); err != nil {
+		return err
+	}
+
 	if err := writeRootDocs(rootDir, templateRoot, codexConfig, claudeConfig); err != nil {
 		return err
 	}
@@ -2076,6 +2085,62 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 
 	fmt.Printf("%s %s in %s\n", action, projectType.ID, rootDir)
 	return nil
+}
+
+func ensureManagedGitignore(rootDir string) error {
+	path := filepath.Join(rootDir, gitignoreFilename)
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	existing := ""
+	if err == nil {
+		existing = string(data)
+	}
+
+	return writeFile(path, []byte(applyManagedGitignoreBlock(existing)))
+}
+
+func applyManagedGitignoreBlock(existing string) string {
+	block := managedGitignoreBlock()
+	startIndex := strings.Index(existing, gitignoreManagedStart)
+	if startIndex >= 0 {
+		endRelativeIndex := strings.Index(existing[startIndex:], gitignoreManagedEnd)
+		if endRelativeIndex >= 0 {
+			endIndex := startIndex + endRelativeIndex + len(gitignoreManagedEnd)
+			before := existing[:startIndex]
+			after := existing[endIndex:]
+
+			updated := before + block
+			if after != "" && !strings.HasPrefix(after, "\n") {
+				updated += "\n"
+			}
+			updated += after
+			return ensureTrailingNewline(updated)
+		}
+	}
+
+	trimmed := strings.TrimRight(existing, "\n")
+	if strings.TrimSpace(trimmed) == "" {
+		return block + "\n"
+	}
+	return trimmed + "\n\n" + block + "\n"
+}
+
+func managedGitignoreBlock() string {
+	lines := make([]string, 0, len(managedGitignoreEntries)+2)
+	lines = append(lines, gitignoreManagedStart)
+	lines = append(lines, managedGitignoreEntries...)
+	lines = append(lines, gitignoreManagedEnd)
+	return strings.Join(lines, "\n")
+}
+
+func ensureTrailingNewline(text string) string {
+	if strings.HasSuffix(text, "\n") {
+		return text
+	}
+	return text + "\n"
 }
 
 func runUsageRulesSync(rootDir string) error {

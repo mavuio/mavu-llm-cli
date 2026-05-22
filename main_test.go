@@ -50,8 +50,8 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 	// MCP config writing is disabled — opencode.json and .codex/config.toml should NOT be written
 	assertFileNotExists(t, filepath.Join(rootDir, opencodeConfigFilename))
 	assertFileNotExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
-	assertDirExists(t, filepath.Join(rootDir, ".codex", "skills", "beans"))
-	assertDirExists(t, filepath.Join(rootDir, ".claude", "skills", "beans"))
+	assertDirExists(t, filepath.Join(rootDir, ".codex", "skills", "my-board"))
+	assertDirExists(t, filepath.Join(rootDir, ".claude", "skills", "my-board"))
 	assertFileExists(t, filepath.Join(rootDir, ".opencode", "command", "teach.md"))
 	assertFileExists(t, filepath.Join(rootDir, ".claude", "commands", "teach.md"))
 }
@@ -89,7 +89,7 @@ func TestRunUpdateUsesStoredProjectType(t *testing.T) {
 		t.Fatalf("run init: %v", err)
 	}
 
-	claudeSkill := filepath.Join(rootDir, ".claude", "skills", "beans", "SKILL.md")
+	claudeSkill := filepath.Join(rootDir, ".claude", "skills", "my-board", "SKILL.md")
 	if err := os.Remove(claudeSkill); err != nil {
 		t.Fatalf("remove skill: %v", err)
 	}
@@ -106,6 +106,114 @@ func TestRunUpdateUsesStoredProjectType(t *testing.T) {
 	if projectType != "php_silverstripe_project" {
 		t.Fatalf("expected project type php_silverstripe_project, got %s", projectType)
 	}
+}
+
+func TestEnsureManagedGitignoreCreatesMissingFile(t *testing.T) {
+	rootDir := t.TempDir()
+
+	if err := ensureManagedGitignore(rootDir); err != nil {
+		t.Fatalf("ensure gitignore: %v", err)
+	}
+
+	assertFileContent(t, filepath.Join(rootDir, gitignoreFilename), managedGitignoreBlock()+"\n")
+}
+
+func TestEnsureManagedGitignoreAppendsToExistingFile(t *testing.T) {
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, gitignoreFilename)
+	if err := os.WriteFile(path, []byte("node_modules\n.env\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+
+	if err := ensureManagedGitignore(rootDir); err != nil {
+		t.Fatalf("ensure gitignore: %v", err)
+	}
+
+	expected := "node_modules\n.env\n\n" + managedGitignoreBlock() + "\n"
+	assertFileContent(t, path, expected)
+}
+
+func TestEnsureManagedGitignoreReplacesExistingManagedBlock(t *testing.T) {
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, gitignoreFilename)
+	stale := "node_modules\n\n" + gitignoreManagedStart + "\n.old-entry\n" + gitignoreManagedEnd + "\n\n.env\n"
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+
+	if err := ensureManagedGitignore(rootDir); err != nil {
+		t.Fatalf("ensure gitignore: %v", err)
+	}
+
+	expected := "node_modules\n\n" + managedGitignoreBlock() + "\n\n.env\n"
+	assertFileContent(t, path, expected)
+}
+
+func TestEnsureManagedGitignoreIsIdempotent(t *testing.T) {
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, gitignoreFilename)
+	if err := os.WriteFile(path, []byte("node_modules\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+
+	if err := ensureManagedGitignore(rootDir); err != nil {
+		t.Fatalf("first ensure gitignore: %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read first gitignore: %v", err)
+	}
+
+	if err := ensureManagedGitignore(rootDir); err != nil {
+		t.Fatalf("second ensure gitignore: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read second gitignore: %v", err)
+	}
+
+	if string(first) != string(second) {
+		t.Fatalf("expected idempotent output\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestRunInitCreatesManagedGitignore(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "gitignore_init.toml"), `name = "Gitignore Init"
+`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "gitignore_init", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	assertFileContent(t, filepath.Join(rootDir, gitignoreFilename), managedGitignoreBlock()+"\n")
+}
+
+func TestRunUpdateRefreshesManagedGitignore(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "gitignore_update.toml"), `name = "Gitignore Update"
+`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "gitignore_update", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	path := filepath.Join(rootDir, gitignoreFilename)
+	stale := "custom.log\n\n" + gitignoreManagedStart + "\n.old-entry\n" + gitignoreManagedEnd + "\n"
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+		t.Fatalf("write stale gitignore: %v", err)
+	}
+
+	if err := runUpdate([]string{"--path", rootDir}); err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+
+	expected := "custom.log\n\n" + managedGitignoreBlock() + "\n"
+	assertFileContent(t, path, expected)
 }
 
 func TestCommandOverrides(t *testing.T) {
@@ -1324,6 +1432,17 @@ func templatesPath(t *testing.T) string {
 		t.Fatalf("get working directory: %v", err)
 	}
 	return filepath.Join(cwd, "templates")
+}
+
+func assertFileContent(t *testing.T, path, expected string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(data) != expected {
+		t.Fatalf("unexpected content for %s\nexpected:\n%s\nactual:\n%s", path, expected, string(data))
+	}
 }
 
 func assertFileExists(t *testing.T, path string) {
