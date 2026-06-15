@@ -26,40 +26,42 @@ import (
 )
 
 const (
-	projectTypesDir        = "project_types"
-	projectTypesGlob       = "project_types/*.toml"
-	snippetsDir            = "snippets"
-	skillTemplatesDir      = "skill_templates"
-	commandTemplatesDir    = "command_templates"
-	commandTemplateExt     = ".md"
-	mcpTemplatesDir        = "mcp_templates"
-	mcpTemplateExt         = ".mcp.json"
-	sessionTemplatesDir    = "session_templates"
-	sessionTemplateExt     = ".toml"
-	templatesEnvVar        = "MAVU_LLM_TEMPLATES_DIR"
-	agentsFilename         = "AGENTS.md"
-	claudeFilename         = "CLAUDE.md"
-	mavuDirName            = ".mavu"
-	gsdDirName             = ".gsd"
-	localConfigFilename    = "config.toml"
-	legacyConfigFilename   = ".mavu_llm.toml"
-	opencodeConfigFilename = "opencode.json"
-	mcpConfigFilename      = ".mcp.json"
-	gitignoreFilename      = ".gitignore"
-	gitignoreManagedStart  = "# BEGIN mavu-llm managed"
-	gitignoreManagedEnd    = "# END mavu-llm managed"
-	usageRulesConfigPath   = "lib/_mavubit/essentials/config/essentials_mix.exs"
-	usageRulesFilename     = "USAGE_RULES.md"
-	usageRulesOutputPath   = "USAGE_RULES.md"
-	sessionsAPITokenEnvVar = "MAVU_SESSIONS_API_TOKEN"
-	version                = "0.2.17"
-	defaultFilePermission  = 0o644
-	defaultDirPermission   = 0o755
+	projectTypesDir         = "project_types"
+	projectTypesGlob        = "project_types/*.toml"
+	snippetsDir             = "snippets"
+	skillTemplatesDir       = "skill_templates"
+	commandTemplatesDir     = "command_templates"
+	commandTemplateExt      = ".md"
+	mcpTemplatesDir         = "mcp_templates"
+	mcpTemplateExt          = ".mcp.json"
+	sessionTemplatesDir     = "session_templates"
+	sessionTemplateExt      = ".toml"
+	templatesEnvVar         = "MAVU_LLM_TEMPLATES_DIR"
+	agentsFilename          = "AGENTS.md"
+	claudeFilename          = "CLAUDE.md"
+	mavuDirName             = ".mavu"
+	gsdDirName              = ".gsd"
+	localConfigFilename     = "config.toml"
+	legacyConfigFilename    = ".mavu_llm.toml"
+	opencodeConfigFilename  = "opencode.json"
+	mcpConfigFilename       = ".mcp.json"
+	gitignoreFilename       = ".gitignore"
+	gitignoreManagedStart   = "# BEGIN mavu-llm managed"
+	gitignoreManagedEnd     = "# END mavu-llm managed"
+	usageRulesConfigPath    = "lib/_mavubit/essentials/config/essentials_mix.exs"
+	usageRulesFilename      = "USAGE_RULES.md"
+	usageRulesOutputPath    = "USAGE_RULES.md"
+	sharedNotesLinkName     = "shared_notes"
+	sharedNotesTargetPrefix = "/www/mavunotes/projects"
+	sessionsAPITokenEnvVar  = "MAVU_SESSIONS_API_TOKEN"
+	version                 = "0.2.18"
+	defaultFilePermission   = 0o644
+	defaultDirPermission    = 0o755
 )
 
 var verboseOutput bool
 
-var managedGitignoreEntries = []string{".pi", ".dexter.*", ".bit"}
+var managedGitignoreEntries = []string{".pi", ".dexter.*", ".bit", sharedNotesLinkName}
 
 type ProjectConfig struct {
 	Name              string     `toml:"name"`
@@ -2071,6 +2073,10 @@ func runSetup(rootDir string, projectType ProjectType, localConfig ProjectTypeFi
 		return err
 	}
 
+	if err := ensureSharedNotesSymlink(rootDir); err != nil {
+		return err
+	}
+
 	if err := writeRootDocs(rootDir, templateRoot, codexConfig, claudeConfig); err != nil {
 		return err
 	}
@@ -2100,6 +2106,49 @@ func ensureManagedGitignore(rootDir string) error {
 	}
 
 	return writeFile(path, []byte(applyManagedGitignoreBlock(existing)))
+}
+
+func ensureSharedNotesSymlink(rootDir string) error {
+	cleanRoot := filepath.Clean(rootDir)
+	projectName := filepath.Base(cleanRoot)
+	if projectName == "." || projectName == string(filepath.Separator) || strings.TrimSpace(projectName) == "" {
+		return fmt.Errorf("cannot derive project name from %s", rootDir)
+	}
+
+	linkPath := filepath.Join(cleanRoot, sharedNotesLinkName)
+	targetPath := filepath.Join(sharedNotesTargetPrefix, projectName)
+
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect %s: %w", linkPath, err)
+		}
+		if err := os.Symlink(targetPath, linkPath); err != nil {
+			return fmt.Errorf("create symlink %s -> %s: %w", linkPath, targetPath, err)
+		}
+		logCreated(linkPath)
+		return nil
+	}
+
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("%s already exists and is not a symlink", linkPath)
+	}
+
+	existingTarget, err := os.Readlink(linkPath)
+	if err != nil {
+		return fmt.Errorf("read symlink %s: %w", linkPath, err)
+	}
+	if existingTarget == targetPath {
+		return nil
+	}
+
+	if err := os.Remove(linkPath); err != nil {
+		return fmt.Errorf("remove stale symlink %s: %w", linkPath, err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		return fmt.Errorf("create symlink %s -> %s: %w", linkPath, targetPath, err)
+	}
+	return nil
 }
 
 func applyManagedGitignoreBlock(existing string) string {

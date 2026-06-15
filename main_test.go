@@ -216,6 +216,94 @@ func TestRunUpdateRefreshesManagedGitignore(t *testing.T) {
 	assertFileContent(t, path, expected)
 }
 
+func TestManagedGitignoreIncludesSharedNotes(t *testing.T) {
+	block := managedGitignoreBlock()
+	if !strings.Contains(block, "\n"+sharedNotesLinkName+"\n") {
+		t.Fatalf("expected managed gitignore block to include %s, got:\n%s", sharedNotesLinkName, block)
+	}
+}
+
+func TestRunUpdateCreatesSharedNotesSymlink(t *testing.T) {
+	templatesDir := createTemplateRoot(t)
+	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "shared_notes_update.toml"), `name = "Shared Notes Update"
+`)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	projectName := fmt.Sprintf("shared-notes-%d", time.Now().UnixNano())
+	rootDir := filepath.Join(t.TempDir(), projectName)
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := runInit([]string{"--type", "shared_notes_update", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	linkPath := filepath.Join(rootDir, sharedNotesLinkName)
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatalf("remove init symlink: %v", err)
+	}
+
+	if err := runUpdate([]string{"--path", rootDir}); err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+
+	expectedTarget := filepath.Join(sharedNotesTargetPrefix, projectName)
+	assertSymlinkTarget(t, linkPath, expectedTarget)
+}
+
+func TestEnsureSharedNotesSymlinkIsIdempotent(t *testing.T) {
+	rootDir := filepath.Join(t.TempDir(), "idempotent-project")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	if err := ensureSharedNotesSymlink(rootDir); err != nil {
+		t.Fatalf("first ensure symlink: %v", err)
+	}
+	if err := ensureSharedNotesSymlink(rootDir); err != nil {
+		t.Fatalf("second ensure symlink: %v", err)
+	}
+
+	assertSymlinkTarget(t, filepath.Join(rootDir, sharedNotesLinkName), filepath.Join(sharedNotesTargetPrefix, "idempotent-project"))
+}
+
+func TestEnsureSharedNotesSymlinkReplacesWrongSymlink(t *testing.T) {
+	rootDir := filepath.Join(t.TempDir(), "replace-project")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	linkPath := filepath.Join(rootDir, sharedNotesLinkName)
+	if err := os.Symlink("/tmp/wrong-shared-notes-target", linkPath); err != nil {
+		t.Fatalf("create wrong symlink: %v", err)
+	}
+
+	if err := ensureSharedNotesSymlink(rootDir); err != nil {
+		t.Fatalf("ensure symlink: %v", err)
+	}
+
+	assertSymlinkTarget(t, linkPath, filepath.Join(sharedNotesTargetPrefix, "replace-project"))
+}
+
+func TestEnsureSharedNotesSymlinkRejectsNonSymlink(t *testing.T) {
+	rootDir := filepath.Join(t.TempDir(), "conflict-project")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	linkPath := filepath.Join(rootDir, sharedNotesLinkName)
+	if err := os.WriteFile(linkPath, []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write conflict file: %v", err)
+	}
+
+	err := ensureSharedNotesSymlink(rootDir)
+	if err == nil {
+		t.Fatal("expected non-symlink conflict error")
+	}
+	if !strings.Contains(err.Error(), "not a symlink") {
+		t.Fatalf("expected not-a-symlink error, got: %v", err)
+	}
+	assertFileContent(t, linkPath, "keep me")
+}
+
 func TestRunUpdateRemovesStaleSkillsWithoutPrompt(t *testing.T) {
 	templatesDir := createTemplateRoot(t)
 	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "stale_skills.toml"), `name = "Stale Skills"
@@ -1596,6 +1684,24 @@ func assertDirExists(t *testing.T, path string) {
 	}
 	if !info.IsDir() {
 		t.Fatalf("expected directory but found file: %s", path)
+	}
+}
+
+func assertSymlinkTarget(t *testing.T, path, expectedTarget string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("expected symlink %s: %v", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected symlink but found mode %s at %s", info.Mode(), path)
+	}
+	actualTarget, err := os.Readlink(path)
+	if err != nil {
+		t.Fatalf("read symlink %s: %v", path, err)
+	}
+	if actualTarget != expectedTarget {
+		t.Fatalf("unexpected symlink target for %s\nexpected: %s\nactual:   %s", path, expectedTarget, actualTarget)
 	}
 }
 
