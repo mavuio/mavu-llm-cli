@@ -49,12 +49,13 @@ const (
 	gitignoreManagedStart   = "# BEGIN mavu-llm managed"
 	gitignoreManagedEnd     = "# END mavu-llm managed"
 	usageRulesConfigPath    = "lib/_mavubit/essentials/config/essentials_mix.exs"
+	mavuUsageRulesTaskPath  = "lib/_mavubit/essentials/mix_tasks/mavu_usage_rules_sync.ex"
 	usageRulesFilename      = "USAGE_RULES.md"
 	usageRulesOutputPath    = "USAGE_RULES.md"
 	sharedNotesLinkName     = "shared_notes"
 	sharedNotesTargetPrefix = "/www/mavunotes/projects"
 	sessionsAPITokenEnvVar  = "MAVU_SESSIONS_API_TOKEN"
-	version                 = "0.2.20"
+	version                 = "0.2.21"
 	defaultFilePermission   = 0o644
 	defaultDirPermission    = 0o755
 )
@@ -2201,7 +2202,10 @@ func runUsageRulesSync(rootDir string) error {
 		return err
 	}
 
-	args := []string{"usage_rules.sync", "--yes"}
+	args, err := usageRulesSyncArgs(rootDir)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("Running: mix %s\n", strings.Join(args, " "))
 	cmd := exec.Command("mix", args...)
 	cmd.Dir = rootDir
@@ -2209,15 +2213,26 @@ func runUsageRulesSync(rootDir string) error {
 	tail := tailLines(string(output), 10)
 	if err != nil {
 		message := strings.TrimSpace(tail)
+		taskName := args[0]
 		if message != "" {
-			return fmt.Errorf("usage_rules.sync failed: %w\n%s", err, message)
+			return fmt.Errorf("%s failed: %w\n%s", taskName, err, message)
 		}
-		return fmt.Errorf("usage_rules.sync failed: %w", err)
+		return fmt.Errorf("%s failed: %w", taskName, err)
 	}
 	if strings.TrimSpace(tail) != "" {
 		fmt.Printf("%s\n", tail)
 	}
 	return appendUsageRules(rootDir)
+}
+
+func usageRulesSyncArgs(rootDir string) ([]string, error) {
+	customTaskPath := filepath.Join(rootDir, mavuUsageRulesTaskPath)
+	if _, err := os.Stat(customTaskPath); err == nil {
+		return []string{"mavu.usage_rules.sync", "--yes"}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return []string{"usage_rules.sync", "--yes"}, nil
 }
 
 func appendUsageRules(rootDir string) error {

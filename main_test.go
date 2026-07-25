@@ -341,6 +341,35 @@ func TestEnsureSharedNotesSymlinkRejectsNonSymlink(t *testing.T) {
 	assertFileContent(t, linkPath, "keep me")
 }
 
+func TestUsageRulesSyncArgsPrefersMavuTask(t *testing.T) {
+	rootDir := t.TempDir()
+	taskPath := filepath.Join(rootDir, mavuUsageRulesTaskPath)
+	if err := os.MkdirAll(filepath.Dir(taskPath), 0o755); err != nil {
+		t.Fatalf("mkdir custom task dir: %v", err)
+	}
+	if err := os.WriteFile(taskPath, []byte("defmodule Mix.Tasks.Mavu.UsageRules.Sync do\nend\n"), 0o644); err != nil {
+		t.Fatalf("write custom task: %v", err)
+	}
+
+	args, err := usageRulesSyncArgs(rootDir)
+	if err != nil {
+		t.Fatalf("select usage rules task: %v", err)
+	}
+	if got, want := strings.Join(args, " "), "mavu.usage_rules.sync --yes"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestUsageRulesSyncArgsFallsBackToStandardTask(t *testing.T) {
+	args, err := usageRulesSyncArgs(t.TempDir())
+	if err != nil {
+		t.Fatalf("select usage rules task: %v", err)
+	}
+	if got, want := strings.Join(args, " "), "usage_rules.sync --yes"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestRunUpdatePreservesUnmanagedSkillsAndRepeatsGuidance(t *testing.T) {
 	templatesDir := createTemplateRoot(t)
 	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "stale_skills.toml"), `name = "Stale Skills"
