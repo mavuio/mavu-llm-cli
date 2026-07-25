@@ -2,7 +2,7 @@ name = "Generic PHP Project"
 description = "Generic PHP Project"
 
 
-skills = ["prod-connect", "dokku-helper", "my-board"]
+skills = ["prod-connect", "prod-sync", "dokku-helper", "my-board"]
 commands = ["teach"]
 mcps = []
 

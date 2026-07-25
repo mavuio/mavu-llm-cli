@@ -1,10 +1,10 @@
 name = "Elixir Phoenix"
 description = "Phoenix + Elixir project"
-skills = ["elixir-architect", "prod-eval", "prod-connect", "bit-ship", "phoenix-server", "dokku-helper","db-migrations","mavu-conventions","mavu-building","prod-joblogs","reach-analysis","my-board"]
+skills = ["elixir-architect", "prod-eval", "prod-connect", "prod-sync", "phoenix-server", "dokku-helper","db-migrations","mavu-conventions","mavu-building","prod-joblogs","elixir-code-analysis","my-board"]
 commands = ["teach"]
 mcps = ["tidewave"]
 
-snippets = ["elixir_rules", "plan"]
+snippets = ["elixir_rules", "matt"]
 
 autostart_sessions = ["phx_server","be_watch", "fe_watch"]
 ondemand_sessions = ["prod_file_sync", "remote_iex", "dokku_enter", "dokku_log", "local_iex"]

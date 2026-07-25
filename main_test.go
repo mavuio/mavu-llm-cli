@@ -50,10 +50,47 @@ func TestRunInitCreatesConfigs(t *testing.T) {
 	// MCP config writing is disabled — opencode.json and .codex/config.toml should NOT be written
 	assertFileNotExists(t, filepath.Join(rootDir, opencodeConfigFilename))
 	assertFileNotExists(t, filepath.Join(rootDir, ".codex", "config.toml"))
+	assertDirExists(t, filepath.Join(rootDir, ".agents", "skills", "my-board"))
 	assertDirExists(t, filepath.Join(rootDir, ".codex", "skills", "my-board"))
 	assertDirExists(t, filepath.Join(rootDir, ".claude", "skills", "my-board"))
+	assertSymlinkTarget(t, filepath.Join(rootDir, ".codex", "skills"), filepath.Join("..", ".agents", "skills"))
+	assertSymlinkTarget(t, filepath.Join(rootDir, ".claude", "skills"), filepath.Join("..", ".agents", "skills"))
 	assertFileExists(t, filepath.Join(rootDir, ".opencode", "command", "teach.md"))
 	assertFileExists(t, filepath.Join(rootDir, ".claude", "commands", "teach.md"))
+}
+
+func TestRunUpdateReplacesSkillDirsWithSymlinks(t *testing.T) {
+	templatesDir := templatesPath(t)
+	t.Setenv(templatesEnvVar, templatesDir)
+
+	rootDir := t.TempDir()
+	if err := runInit([]string{"--type", "php_silverstripe_project", "--path", rootDir}); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+
+	for _, toolDir := range []string{".codex", ".claude"} {
+		skillsPath := filepath.Join(rootDir, toolDir, "skills")
+		if err := os.RemoveAll(skillsPath); err != nil {
+			t.Fatalf("remove %s skills symlink: %v", toolDir, err)
+		}
+		legacyPath := filepath.Join(skillsPath, "legacy-skill")
+		if err := os.MkdirAll(legacyPath, 0o755); err != nil {
+			t.Fatalf("mkdir legacy skill: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(legacyPath, "SKILL.md"), []byte("legacy"), 0o644); err != nil {
+			t.Fatalf("write legacy skill: %v", err)
+		}
+	}
+
+	if err := runUpdate([]string{"--path", rootDir}); err != nil {
+		t.Fatalf("run update: %v", err)
+	}
+
+	for _, toolDir := range []string{".codex", ".claude"} {
+		skillsPath := filepath.Join(rootDir, toolDir, "skills")
+		assertSymlinkTarget(t, skillsPath, filepath.Join("..", ".agents", "skills"))
+		assertFileNotExists(t, filepath.Join(skillsPath, "legacy-skill"))
+	}
 }
 
 func TestRunInitVerboseLogsCreatedFiles(t *testing.T) {
@@ -334,6 +371,12 @@ skills = ["core-skill"]
 	}
 
 	assertFileNotExists(t, stalePath)
+	if !strings.Contains(output, "Unmanaged local skills found:\n  - stale-skill") {
+		t.Fatalf("expected stale skill warning, got: %s", output)
+	}
+	if !strings.Contains(output, "To preserve them as project-local skills:\n\n  mkdir -p .mavu/skill_templates\n  cp -R .agents/skills/stale-skill .mavu/skill_templates/") {
+		t.Fatalf("expected manual preservation commands, got: %s", output)
+	}
 	if !strings.Contains(output, "Removed 1 stale skill(s) from agents: stale-skill") {
 		t.Fatalf("expected stale skill removal message, got: %s", output)
 	}

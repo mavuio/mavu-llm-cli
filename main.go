@@ -54,7 +54,7 @@ const (
 	sharedNotesLinkName     = "shared_notes"
 	sharedNotesTargetPrefix = "/www/mavunotes/projects"
 	sessionsAPITokenEnvVar  = "MAVU_SESSIONS_API_TOKEN"
-	version                 = "0.2.18"
+	version                 = "0.2.19"
 	defaultFilePermission   = 0o644
 	defaultDirPermission    = 0o755
 )
@@ -2781,79 +2781,114 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 		return fmt.Errorf("discover local skills: %w", err)
 	}
 
-	targets := []struct {
-		label  string
-		path   string
-		skills []string
-	}{
-		{
-			label:  "codex",
-			path:   filepath.Join(rootDir, ".codex", "skills"),
-			skills: mergeSkills(codexConfig.Skills, localSkills),
-		},
-		{
-			label:  "claude",
-			path:   filepath.Join(rootDir, ".claude", "skills"),
-			skills: mergeSkills(claudeConfig.Skills, localSkills),
-		},
-		{
-			label:  "agents",
-			path:   filepath.Join(rootDir, ".agents", "skills"),
-			skills: mergeSkills(claudeConfig.Skills, localSkills),
-		},
+	agentsPath := filepath.Join(rootDir, ".agents", "skills")
+	canonicalSkills := mergeSkillSets(codexConfig.Skills, claudeConfig.Skills, localSkills)
+
+	if err := syncSkillDir(rootDir, templateRoot, "agents", agentsPath, canonicalSkills); err != nil {
+		return err
 	}
 
-	for _, target := range targets {
-		if len(target.skills) == 0 {
+	return ensureSkillDirSymlinks(rootDir)
+}
+
+func mergeSkillSets(lists ...[]string) []string {
+	var merged []string
+	seen := make(map[string]struct{})
+	for _, list := range lists {
+		for _, skill := range list {
+			if _, ok := seen[skill]; ok {
+				continue
+			}
+			seen[skill] = struct{}{}
+			merged = append(merged, skill)
+		}
+	}
+	return merged
+}
+
+func syncSkillDir(rootDir, templateRoot, label, targetPath string, skills []string) error {
+	if err := os.MkdirAll(targetPath, defaultDirPermission); err != nil {
+		return err
+	}
+
+	desiredSkills := make(map[string]struct{}, len(skills))
+	for _, skill := range skills {
+		desiredSkills[skill] = struct{}{}
+	}
+
+	entries, err := os.ReadDir(targetPath)
+	if err != nil {
+		return err
+	}
+	var toRemove []string
+	for _, entry := range entries {
+		if _, ok := desiredSkills[entry.Name()]; ok {
 			continue
 		}
-		desiredSkills := make(map[string]struct{}, len(target.skills))
-		for _, skill := range target.skills {
-			desiredSkills[skill] = struct{}{}
-		}
-		if err := os.MkdirAll(target.path, defaultDirPermission); err != nil {
-			return err
-		}
-		entries, err := os.ReadDir(target.path)
+		entryPath := filepath.Join(targetPath, entry.Name())
+		managedByUsageRules, err := isUsageRulesManagedSkill(entryPath)
 		if err != nil {
 			return err
 		}
-		var toRemove []string
-		for _, entry := range entries {
-			if _, ok := desiredSkills[entry.Name()]; ok {
-				continue
-			}
-			entryPath := filepath.Join(target.path, entry.Name())
-			managedByUsageRules, err := isUsageRulesManagedSkill(entryPath)
-			if err != nil {
-				return err
-			}
-			if managedByUsageRules {
-				continue
-			}
-			toRemove = append(toRemove, entry.Name())
+		if managedByUsageRules {
+			continue
 		}
-		if len(toRemove) > 0 {
-			fmt.Printf("Removed %d stale skill(s) from %s: %s\n", len(toRemove), target.label, strings.Join(toRemove, ", "))
-		}
+		toRemove = append(toRemove, entry.Name())
+	}
+	if len(toRemove) > 0 {
+		fmt.Println("Unmanaged local skills found:")
 		for _, name := range toRemove {
-			if err := os.RemoveAll(filepath.Join(target.path, name)); err != nil {
-				return err
-			}
+			fmt.Printf("  - %s\n", name)
 		}
+		fmt.Println()
+		fmt.Println("To preserve them as project-local skills:")
+		fmt.Println()
+		fmt.Printf("  mkdir -p %s\n", filepath.Join(mavuDirName, skillTemplatesDir))
+		for _, name := range toRemove {
+			fmt.Printf("  cp -R %s %s\n",
+				filepath.Join(".agents", "skills", name),
+				filepath.Join(mavuDirName, skillTemplatesDir)+string(os.PathSeparator),
+			)
+		}
+		fmt.Println()
+	}
+	for _, name := range toRemove {
+		if err := os.RemoveAll(filepath.Join(targetPath, name)); err != nil {
+			return err
+		}
+	}
+	if len(toRemove) > 0 {
+		fmt.Printf("Removed %d stale skill(s) from %s: %s\n", len(toRemove), label, strings.Join(toRemove, ", "))
+	}
 
-		for _, skill := range target.skills {
-			sourcePath, err := findSkillTemplatePath(rootDir, templateRoot, skill)
-			if err != nil {
-				return err
-			}
-			targetPath := filepath.Join(target.path, skill)
-			if err := os.MkdirAll(targetPath, defaultDirPermission); err != nil {
-				return err
-			}
-			if err := copyDir(sourcePath, targetPath); err != nil {
-				return err
-			}
+	for _, skill := range skills {
+		sourcePath, err := findSkillTemplatePath(rootDir, templateRoot, skill)
+		if err != nil {
+			return err
+		}
+		skillPath := filepath.Join(targetPath, skill)
+		if err := os.MkdirAll(skillPath, defaultDirPermission); err != nil {
+			return err
+		}
+		if err := copyDir(sourcePath, skillPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ensureSkillDirSymlinks(rootDir string) error {
+	for _, toolDir := range []string{".codex", ".claude"} {
+		linkPath := filepath.Join(rootDir, toolDir, "skills")
+		if err := os.MkdirAll(filepath.Dir(linkPath), defaultDirPermission); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(linkPath); err != nil {
+			return err
+		}
+		if err := os.Symlink(filepath.Join("..", ".agents", "skills"), linkPath); err != nil {
+			return err
 		}
 	}
 	return nil

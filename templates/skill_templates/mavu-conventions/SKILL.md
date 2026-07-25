@@ -139,6 +139,37 @@ MavuBuckets.set_value("foo:#{id}", "iteration", 0, persistence_level: 100)
 MavuBuckets.subscribe_live_view("foo_detail:" <> assigns.foo.id)
 ```
 
+## Configuration standard
+
+### Where config should live
+
+- **`config/config.exs`** — declare app config shape and defaults
+- **`config/runtime.exs`** — deployment/runtime wiring only: `DATABASE_URL`, `SECRET_KEY_BASE`, host/port, mailer creds, cloud/API secrets, cluster settings
+- **`lib/` code should not call `System.get_env/1` directly** (except inside `config/runtime.exs`)
+
+Prefer env-backed config tuples in `config/config.exs`:
+
+```elixir
+config :my_app, MyApp.SomeFeature,
+  api_url: {:system, "SOME_API_URL", "https://example.com"},
+  enabled: {:system, "SOME_ENABLED", false}
+```
+
+Then read config from code via `Env.fetch!` through a small wrapper module:
+
+```elixir
+defmodule MyApp.SomeFeature do
+  def config(key), do: Env.fetch!(:my_app, __MODULE__)[key]
+end
+```
+
+### Preferred access patterns
+
+- Use **`Env.fetch!`** for app config that may contain `{:system, ...}` tuples
+- Use small `config/1` wrapper functions like `MavuSulu2.config/1`, `MyApp.Takeaways.config/1`, `MyApp.Sitec.config/1`
+- Use `Application.compile_env` only when a value truly must be compile-time (for example endpoint/session module attributes)
+- Avoid mixing `System.get_env`, `Application.get_env`, and `Env.fetch!` arbitrarily in feature code
+
 ## Logging
 
 ### MavuUtils.log/3
