@@ -341,7 +341,7 @@ func TestEnsureSharedNotesSymlinkRejectsNonSymlink(t *testing.T) {
 	assertFileContent(t, linkPath, "keep me")
 }
 
-func TestRunUpdateRemovesStaleSkillsWithoutPrompt(t *testing.T) {
+func TestRunUpdatePreservesUnmanagedSkillsAndRepeatsGuidance(t *testing.T) {
 	templatesDir := createTemplateRoot(t)
 	writeTemplateFile(t, templatesDir, filepath.Join(projectTypesDir, "stale_skills.toml"), `name = "Stale Skills"
 skills = ["core-skill"]
@@ -370,18 +370,27 @@ skills = ["core-skill"]
 		t.Fatalf("run update: %v", runErr)
 	}
 
-	assertFileNotExists(t, stalePath)
-	if !strings.Contains(output, "Unmanaged local skills found:\n  - stale-skill") {
+	assertFileExists(t, filepath.Join(stalePath, "SKILL.md"))
+	expectedGuidance := "Unmanaged local skills found. They will not be deleted, but move them to the project-local skill templates so the CLI can manage them:\n  - stale-skill"
+	if !strings.Contains(output, expectedGuidance) {
 		t.Fatalf("expected stale skill warning, got: %s", output)
 	}
 	if !strings.Contains(output, "To preserve them as project-local skills:\n\n  mkdir -p .mavu/skill_templates\n  cp -R .agents/skills/stale-skill .mavu/skill_templates/") {
 		t.Fatalf("expected manual preservation commands, got: %s", output)
 	}
-	if !strings.Contains(output, "Removed 1 stale skill(s) from agents: stale-skill") {
-		t.Fatalf("expected stale skill removal message, got: %s", output)
+	if strings.Contains(output, "Removed 1 stale skill") {
+		t.Fatalf("expected stale skill to remain, got: %s", output)
 	}
-	if strings.Contains(output, "Move to .mavu/skill_templates/ to keep them?") {
-		t.Fatalf("expected no preservation prompt, got: %s", output)
+
+	output = captureOutput(t, func() {
+		runErr = runUpdate([]string{"--path", rootDir})
+	})
+	if runErr != nil {
+		t.Fatalf("run second update: %v", runErr)
+	}
+	assertFileExists(t, filepath.Join(stalePath, "SKILL.md"))
+	if !strings.Contains(output, expectedGuidance) {
+		t.Fatalf("expected guidance again on second update, got: %s", output)
 	}
 }
 
@@ -429,12 +438,12 @@ metadata:
 	}
 
 	assertFileExists(t, filepath.Join(usageRulesPath, "SKILL.md"))
-	assertFileNotExists(t, ordinaryStalePath)
+	assertFileExists(t, filepath.Join(ordinaryStalePath, "SKILL.md"))
 	if strings.Contains(output, "ash-framework") {
-		t.Fatalf("expected usage-rules managed skill to be omitted from removal output, got: %s", output)
+		t.Fatalf("expected usage-rules managed skill to be omitted from guidance, got: %s", output)
 	}
-	if !strings.Contains(output, "Removed 1 stale skill(s) from agents: ordinary-stale") {
-		t.Fatalf("expected ordinary stale skill removal message, got: %s", output)
+	if !strings.Contains(output, "  - ordinary-stale") {
+		t.Fatalf("expected ordinary unmanaged skill guidance, got: %s", output)
 	}
 }
 

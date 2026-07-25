@@ -54,7 +54,7 @@ const (
 	sharedNotesLinkName     = "shared_notes"
 	sharedNotesTargetPrefix = "/www/mavunotes/projects"
 	sessionsAPITokenEnvVar  = "MAVU_SESSIONS_API_TOKEN"
-	version                 = "0.2.19"
+	version                 = "0.2.20"
 	defaultFilePermission   = 0o644
 	defaultDirPermission    = 0o755
 )
@@ -2784,7 +2784,7 @@ func createSkillDirs(rootDir, templateRoot string, codexConfig, claudeConfig Res
 	agentsPath := filepath.Join(rootDir, ".agents", "skills")
 	canonicalSkills := mergeSkillSets(codexConfig.Skills, claudeConfig.Skills, localSkills)
 
-	if err := syncSkillDir(rootDir, templateRoot, "agents", agentsPath, canonicalSkills); err != nil {
+	if err := syncSkillDir(rootDir, templateRoot, agentsPath, canonicalSkills); err != nil {
 		return err
 	}
 
@@ -2806,7 +2806,7 @@ func mergeSkillSets(lists ...[]string) []string {
 	return merged
 }
 
-func syncSkillDir(rootDir, templateRoot, label, targetPath string, skills []string) error {
+func syncSkillDir(rootDir, templateRoot, targetPath string, skills []string) error {
 	if err := os.MkdirAll(targetPath, defaultDirPermission); err != nil {
 		return err
 	}
@@ -2820,7 +2820,7 @@ func syncSkillDir(rootDir, templateRoot, label, targetPath string, skills []stri
 	if err != nil {
 		return err
 	}
-	var toRemove []string
+	var unmanagedSkills []string
 	for _, entry := range entries {
 		if _, ok := desiredSkills[entry.Name()]; ok {
 			continue
@@ -2833,32 +2833,24 @@ func syncSkillDir(rootDir, templateRoot, label, targetPath string, skills []stri
 		if managedByUsageRules {
 			continue
 		}
-		toRemove = append(toRemove, entry.Name())
+		unmanagedSkills = append(unmanagedSkills, entry.Name())
 	}
-	if len(toRemove) > 0 {
-		fmt.Println("Unmanaged local skills found:")
-		for _, name := range toRemove {
+	if len(unmanagedSkills) > 0 {
+		fmt.Println("Unmanaged local skills found. They will not be deleted, but move them to the project-local skill templates so the CLI can manage them:")
+		for _, name := range unmanagedSkills {
 			fmt.Printf("  - %s\n", name)
 		}
 		fmt.Println()
 		fmt.Println("To preserve them as project-local skills:")
 		fmt.Println()
 		fmt.Printf("  mkdir -p %s\n", filepath.Join(mavuDirName, skillTemplatesDir))
-		for _, name := range toRemove {
+		for _, name := range unmanagedSkills {
 			fmt.Printf("  cp -R %s %s\n",
 				filepath.Join(".agents", "skills", name),
 				filepath.Join(mavuDirName, skillTemplatesDir)+string(os.PathSeparator),
 			)
 		}
 		fmt.Println()
-	}
-	for _, name := range toRemove {
-		if err := os.RemoveAll(filepath.Join(targetPath, name)); err != nil {
-			return err
-		}
-	}
-	if len(toRemove) > 0 {
-		fmt.Printf("Removed %d stale skill(s) from %s: %s\n", len(toRemove), label, strings.Join(toRemove, ", "))
 	}
 
 	for _, skill := range skills {
